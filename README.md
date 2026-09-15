@@ -9,7 +9,7 @@
 [![Obsidian](https://img.shields.io/badge/Obsidian-plugin-7C3AED?logo=obsidian&logoColor=white)](https://obsidian.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-1B7F4C.svg)](LICENSE)
 [![No build step](https://img.shields.io/badge/build-none%20required-0A7EA4)](#development)
-[![Tests](https://img.shields.io/badge/self--check-16%20passing-1B7F4C)](check.js)
+[![Tests](https://img.shields.io/badge/self--check-37%20passing-1B7F4C)](check.js)
 
 </div>
 
@@ -57,8 +57,11 @@ That's what's on disk. Greppable, diffable, portable, yours. The red-italic rend
 | ⬆️ **Promotion & demotion** | Rewrite the suffix to move a task between timeframes. Up = plain number, down = carry namespace |
 | ✅ **Generated reports** | Daily, weekly and monthly TO-DO sections are rebuilt from your log, never typed by hand |
 | ~~🚫~~ **Strikethrough & DROPPED** | Native Obsidian checkboxes. `- [x]` strikes it, `- [-]` marks it `[DROPPED]` |
-| 📄 **One note per month** | `SEPTEMBER 2026.md` holds every week, day and report. No file sprawl |
-| 📦 **Zero dependencies** | 240 lines of plain JavaScript. No npm, no bundler, no build step |
+| 🔗 **Automatic tool linking** | Mention a tool that exists in `Tools/` and it becomes a real wikilink — backlinks and graph included |
+| ⌨️ **`@` tool picker** | Type `@` for a dropdown of your tools, or keep typing to create a new tool note on the spot |
+| 🗂️ **Generated indexes** | A year note with live per-month counts, and a collapsible index inside every month |
+| 📄 **One note per month** | `2026/SEPTEMBER 2026.md` holds every week, day and report. No file sprawl |
+| 📦 **Zero dependencies** | ~450 lines of plain JavaScript. No npm, no bundler, no build step |
 
 ---
 
@@ -116,25 +119,80 @@ Declare a move by writing the line again later with a new suffix. Tachado links 
 
 ---
 
-## Document structure
+## Vault structure
 
-One note per month. Headings define the skeleton, and the TO-DO headings are the only markers Tachado needs — it owns everything between a report heading and the next heading.
+Year folders, one note per month, and a `Tools/` folder for everything you link to.
+
+```
+your-vault/
+├── 2026/
+│   ├── 2026 Index.md          ← generated
+│   ├── SEPTEMBER 2026.md
+│   └── OCTOBER 2026.md
+├── 2027/
+│   └── 2027 Index.md          ← generated
+└── Tools/
+    ├── Figma.md
+    └── Postgres.md
+```
+
+Inside a month note, headings define the skeleton. The TO-DO headings are the only markers Tachado needs — it owns everything between a report heading and the next heading.
 
 ```markdown
-# WEEK 3 OF SEPTEMBER          ← week banner
+# SEPTEMBER 2026
 
-## Mon, September, 14:         ← day
-9:40 a.m. : went to the office
-1:00 p.m. : 1.D call the bank
+%% tachado:index %%            ← generated, invisible in Reading view
+> [!abstract]- Index
+> Year · [[2026 Index|2026]]
+> **Weeks** · [[#WEEK 1 OF SEPTEMBER|Week 1]]
+> **Days** · [[#Mon, September, 7:|Mon 7]] · [[#Tue, September, 8:|Tue 8]]
+%% /tachado:index %%
 
-### Daily TO-DO Report         ← generated
+# WEEK 1 OF SEPTEMBER           ← week banner
 
-## END OF WEEK 3 TO-DO REPORT  ← generated
+## Mon, September, 7:           ← day
+9:30 a.m. : kicked off the sprint
+11:00 a.m. : 1.D write the migration
+
+### Daily TO-DO Report          ← generated
+
+## END OF WEEK 1 TO-DO REPORT   ← generated
 
 # END OF SEPTEMBER TO-DO REPORT ← generated
 ```
 
-See [`example/SEPTEMBER 2026.md`](example/SEPTEMBER%202026.md) for a full worked month.
+See [`example/`](example/) for a full worked month, its year index and two tool notes.
+
+---
+
+## Tools and automatic linking
+
+Every tool, service or project you reference is **its own note** in `Tools/`. Mention one anywhere in your log and Tachado turns it into a real wikilink, so backlinks and the graph view actually work.
+
+```markdown
+11:00 a.m. : 1.D write the migration in postgres
+                                        ↓
+11:00 a.m. : 1.D write the migration in [[Postgres|postgres]]
+```
+
+Your original casing is preserved through the alias. Frontmatter `aliases` are matched too, so `psql` and `postgresql` both resolve to the same note.
+
+### The `@` picker
+
+Type `@` anywhere to get a dropdown of every tool in `Tools/`. Keep typing to filter. If the name doesn't exist yet, the last option creates `Tools/<name>.md` from a template and links it in one keystroke.
+
+Linking is deliberately conservative — it skips inline code, URLs, markdown links, existing wikilinks, blockquotes, generated report rows, and anything shorter than three characters.
+
+---
+
+## Indexes
+
+| Index | Where | Contents |
+|---|---|---|
+| **Year** | `2026/2026 Index.md` | Every month in that year, with live open / done / dropped counts and totals |
+| **Month** | Top of each month note | Collapsible callout linking back to the year, plus every week and day in the note |
+
+Both regenerate whenever you open a month note. The month index lives inside an Obsidian comment block, so it's invisible in Reading view and never clutters your writing.
 
 ---
 
@@ -142,9 +200,11 @@ See [`example/SEPTEMBER 2026.md`](example/SEPTEMBER%202026.md) for a full worked
 
 | Command | What it does |
 |---|---|
-| **Rebuild TO-DO reports** | Reparses the note and regenerates every report section |
+| **Rebuild TO-DO reports and index** | Reparses the note, relinks tools, regenerates every report and the index |
+| **Rebuild year index** | Recounts every month in the current year folder |
+| **New tool note** | Drops an `@` at the cursor to open the tool picker |
 
-Reports also rebuild automatically whenever you open a note whose name contains a year — so carry-over just happens.
+All of it also runs automatically whenever you open a month note — so carry-over, linking and indexes just happen.
 
 ---
 
@@ -167,7 +227,7 @@ There's no build step. `main.js` is what Obsidian loads.
 node check.js
 ```
 
-16 assertions covering the `0.N` sort order, promotion, demotion arrival day, checkbox-state preservation and idempotence. No test framework.
+37 assertions covering the `0.N` sort order, promotion, demotion arrival day, checkbox-state preservation, autolinking guards, index generation and idempotence. No test framework.
 
 ### Known limitation
 
@@ -178,7 +238,7 @@ node check.js
 ## Roadmap
 
 - [ ] `.docx` export via Pandoc with a reference template — Arial 26 titles, Arial 20 day headings, exact task colors
-- [ ] Settings tab for colors and heading levels
+- [ ] Settings tab for colors, folder names and heading levels
 - [ ] Community plugin directory submission
 
 ---
