@@ -1,0 +1,13 @@
+/* Scope colors. Change them here, nowhere else. */
+.theme-light { --tl-D:#ff0000; --tl-W:#ff9900; --tl-M:#4a86e8; }
+/* lifted for contrast on dark backgrounds; same hues */
+.theme-dark  { --tl-D:#ff6b6b; --tl-W:#ffb84d; --tl-M:#7fb3f5; }
+
+.tl-tok, .tl-body { font-style: italic; }
+.tl-tok  { font-weight: 700; }
+.tl-D, .tl-D.tl-body { color: var(--tl-D); }
+.tl-W, .tl-W.tl-body { color: var(--tl-W); }
+.tl-M, .tl-M.tl-body { color: var(--tl-M); }
+
+.tl-dropped { opacity: .6; }
+.tl-dropped .tl-flag { font-style: normal; font-weight: 700; letter-spacing: .04em; }

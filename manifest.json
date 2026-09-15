@@ -1,0 +1,10 @@
+{
+  "id": "tachado",
+  "name": "Tachado",
+  "version": "0.1.0",
+  "minAppVersion": "1.4.0",
+  "description": "Colored daily/weekly/monthly task tokens with automatic carry-over and generated TO-DO reports. One note per month.",
+  "author": "Lucia Adams",
+  "authorUrl": "https://github.com/maledadams",
+  "isDesktopOnly": false
+}
