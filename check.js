@@ -13,7 +13,7 @@ const { rebuild, autolink, yearIndexNote, countStates, ENTITY_TEMPLATE, KINDS,
         roundTime, normalizeTimes, unlink, GEN_LINE, parseGhUrl, commitEntry, prEntry, reviewEntry,
         prToEntries, commitsToEntries, reviewsToEntries, tidy, insertEntry, minutesOf,
         monthSkeleton, monthChoices, weekOfMonth, ensureDay, parseTimeInput,
-        nowRounded, calendarGrid, isFuture } = T;
+        nowRounded, calendarGrid, isFuture, firstDayOfWeek } = T;
 let n = 0;
 const ok = (name, cond) => { n++; if (!cond) { console.error('FAIL:', name); process.exit(1); } };
 const has = (out, s) => out.includes(s);
@@ -511,6 +511,86 @@ ok('tomorrow blocked',  isFuture(2026, 8, 16, now));
 ok('next month blocked', isFuture(2026, 9, 1, now));
 ok('last month allowed', !isFuture(2026, 7, 31, now));
 }
+}
+
+/* ---- a report for a day that hasn't arrived stays empty ---- */
+{
+const doc = `# SEPTEMBER 2026
+
+# WEEK 3 OF SEPTEMBER
+
+## Mon, September, 14:
+9:00 a.m. : 1.D unfinished thing
+
+### Daily TO-DO Report
+
+## Tue, September, 15:
+
+### Daily TO-DO Report
+
+## Wed, September, 16:
+
+### Daily TO-DO Report
+
+## Thu, September, 17:
+
+### Daily TO-DO Report
+`;
+const meta = { year: '2026', month: 8, today: new Date(2026, 8, 15) };
+const o = rebuild(doc, [], meta);
+const dayOf = (name) => o.split(`## ${name}`)[1].split(/\n## /)[0];
+
+ok('origin day lists it',      dayOf('Mon, September, 14:').includes('1.D — unfinished thing'));
+ok('today carries it',         dayOf('Tue, September, 15:').includes('0.1.D — unfinished thing'));
+ok('tomorrow stays empty',     dayOf('Wed, September, 16:').includes('*nothing*'));
+ok('later days stay empty',    dayOf('Thu, September, 17:').includes('*nothing*'));
+
+// once that day arrives, it fills in
+const later = rebuild(doc, [], { ...meta, today: new Date(2026, 8, 17) });
+ok('it appears when the day comes',
+   later.split('## Thu, September, 17:')[1].split(/\n## /)[0].includes('0.1.D — unfinished thing'));
+
+// with no date context nothing is suppressed, so a bare rebuild still works
+ok('undated rebuild still carries', rebuild(doc, [], {}).includes('0.1.D — unfinished thing'));
+
+ok('first day of week 1', firstDayOfWeek(2026, 8, 1) === 1);
+ok('first day of week 3', firstDayOfWeek(2026, 8, 3) === 14);
+ok('first day of week 5', firstDayOfWeek(2026, 8, 5) === 28);
+
+/* ---- one task carried for a fortnight is still one task ---- */
+const rows = [
+  '- [ ] 1.D — same thing', '- [ ] 0.1.D — same thing', '- [ ] 0.1.D — same thing',
+  '- [x] 1.D — ~~a finished one~~', '- [-] 2.D — ~~a dropped one~~ [DROPPED]',
+].join('\n');
+const c = countStates(rows);
+ok('carried task counted once', c.open === 1);
+ok('done counted',              c.done === 1);
+ok('dropped counted',           c.dropped === 1);
+}
+
+/* ---- the note heals its own skeleton ---- */
+{
+const meta = { year: '2026', month: 8, today: new Date(2026, 8, 15) };
+const noTitle = '# WEEK 3 OF SEPTEMBER\n\n## Mon, September, 14:\n\n### Daily TO-DO Report\n';
+const fixed = rebuild(noTitle, [], meta);
+ok('title restored',   fixed.startsWith('# SEPTEMBER 2026'));
+ok('title not doubled', (fixed.match(/^# SEPTEMBER 2026$/gm) || []).length === 1);
+ok('healing is stable', rebuild(fixed, [], meta) === fixed);
+ok('existing title kept once',
+   (rebuild('# SEPTEMBER 2026\n\n# WEEK 3 OF SEPTEMBER\n', [], meta).match(/^# SEPTEMBER 2026$/gm) || []).length === 1);
+
+const unnumbered = `# SEPTEMBER 2026
+
+# WEEK 3 OF SEPTEMBER
+
+## Mon, September, 14:
+9:00 a.m. : 1.W a weekly thing
+
+## END OF WEEK TO-DO REPORT
+`;
+const num = rebuild(unnumbered, [], meta);
+ok('weekly heading gets its number', num.includes('## END OF WEEK 3 TO-DO REPORT'));
+ok('and reports into it',            num.includes('1.W — a weekly thing'));
 }
 
 console.log(`all ${n} checks passed`);

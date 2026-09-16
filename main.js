@@ -122,7 +122,9 @@ function resolve({ mentions, states }) {
 // own period. Promotion to a longer timeframe is always a plain number.
 const periodOf = (week, day, scope) => (scope === 'D' ? day : scope === 'W' ? week : 0);
 
-function bucket(tasks, scope, periodId) {
+// `noCarry` is for a period that hasn't happened yet: a task carries forward
+// as days pass, it is not projected into next week's report in advance.
+function bucket(tasks, scope, periodId, noCarry) {
   const rows = [];
   for (const t of tasks) {
     if (t.scope !== scope) continue;
@@ -134,7 +136,9 @@ function bucket(tasks, scope, periodId) {
       : periodOf(t.week, t.day, scope);
     if (arrival > periodId) continue;                        // hasn't arrived yet
     if (arrival < periodId && t.state !== 'open') continue;   // closed, stop dragging it
-    rows.push({ ...t, carry: demoted || arrival < periodId });
+    const carry = demoted || arrival < periodId;
+    if (carry && noCarry) continue;                          // this period is still ahead
+    rows.push({ ...t, carry });
   }
   // both lists stay in document order, so oldest is always first
   const carried = rows.filter((r) => r.carry);
@@ -303,6 +307,12 @@ function calendarGrid(year, monthIdx) {
   while (cells.length % 7) cells.push(null);
   return Array.from({ length: cells.length / 7 }, (_, i) => cells.slice(i * 7, i * 7 + 7));
 }
+
+const firstDayOfWeek = (year, monthIdx, week) => {
+  const last = new Date(year, monthIdx + 1, 0).getDate();
+  for (let d = 1; d <= last; d++) if (weekOfMonth(year, monthIdx, d) === week) return d;
+  return 1;
+};
 
 const isFuture = (year, monthIdx, day, now = new Date()) =>
   new Date(year, monthIdx, day) > new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -552,9 +562,29 @@ function rebuild(text, tools = [], meta = {}) {
     return inFence ? l : autolink(normalizeTimes(l), tools);
   });
 
+  // a weekly report converted from Word arrives as "END OF WEEK TO-DO REPORT";
+  // label it with the week it sits in so it can be sorted and reported on
+  let seenWeek = 0;
+  lines = lines.map((l) => {
+    const w = l.match(H_WEEK);
+    if (w) { seenWeek = +w[1]; return l; }
+    return seenWeek && /^##\s+END OF WEEK\s+TO-?DO/i.test(l)
+      ? `## END OF WEEK ${seenWeek} TO-DO REPORT` : l;
+  });
+
   const doc = parse(lines.join('\n'));
   const tasks = resolve(doc);
   const out = doc.lines.slice();
+
+  // A report for a day or week that hasn't arrived yet stays empty.
+  const y = +meta.year, mo = meta.month;
+  const known = Number.isFinite(y) && Number.isFinite(mo);
+  const ahead = (r) => {
+    if (!known) return false;
+    if (r.kind === 'D') return isFuture(y, mo, r.day, meta.today);
+    if (r.kind === 'W') return isFuture(y, mo, firstDayOfWeek(y, mo, r.week), meta.today);
+    return false;
+  };
 
   // replace each report block's body, back to front so indices stay valid
   for (const r of [...doc.reports].reverse()) {
@@ -563,8 +593,14 @@ function rebuild(text, tools = [], meta = {}) {
     while (end < out.length && !(/^#{1,6}\s/.test(out[end]) && out[end].match(/^#+/)[0].length <= level)) end++;
 
     const periodId = r.kind === 'D' ? r.day : r.kind === 'W' ? r.week : 0;
-    const rows = bucket(tasks, r.kind, periodId).map(renderLine);
+    const rows = bucket(tasks, r.kind, periodId, ahead(r)).map(renderLine);
     out.splice(r.at + 1, end - r.at - 1, '', ...(rows.length ? rows : ['*nothing*']), '');
+  }
+
+  // the note's own title, restored if anything upstream dropped it
+  if (known) {
+    const title = `# ${MONTHS[mo]} ${y}`;
+    if (!out.some((l) => l.trim() === title)) out.unshift(title, '');
   }
 
   // index sits at the very top, below an H1 title if the note opens with one
@@ -580,11 +616,18 @@ function rebuild(text, tools = [], meta = {}) {
   return spaced.join('\n').replace(/\n{3,}/g, '\n\n');   // one blank line, always
 }
 
+// One task carried across a fortnight is one task, not fourteen, so rows are
+// collapsed by their text before counting.
 const countStates = (text) => {
   const c = { open: 0, done: 0, dropped: 0 };
+  const seen = new Set();
   for (const l of text.split('\n')) {
-    const m = l.match(/^\s*-\s*\[([ xX-])\]\s*(?:0\.)?\d+\.[DWM]\b/);
-    if (m) c[m[1] === '-' ? 'dropped' : m[1] === ' ' ? 'open' : 'done']++;
+    const m = l.match(/^\s*-\s*\[([ xX-])\]\s*(?:0\.)?\d+\.[DWM]\s*[\u2014-]?\s*(.*)$/);
+    if (!m) continue;
+    const key = keyOf(m[2].replace(/~~/g, '').replace(/\s*\[DROPPED\]\s*$/i, ''));
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    c[m[1] === '-' ? 'dropped' : m[1] === ' ' ? 'open' : 'done']++;
   }
   return c;
 };
@@ -1169,10 +1212,11 @@ module.exports = class Tachado extends Plugin {
     const f = file || this.app.workspace.getActiveFile();
     if (!this.isMonth(f)) { if (loud) new Notice('Open a month note first, e.g. 2026/SEPTEMBER 2026.md'); return; }
     const year = f.path.match(YEAR_DIR)[1];
+    const month = MONTHS.indexOf(f.basename.toUpperCase().split(' ')[0]);
     const linkables = this.entities();
     let changed = false;
     await this.app.vault.process(f, (data) => {
-      const next = rebuild(data, linkables, { year });
+      const next = rebuild(data, linkables, { year, month, today: new Date() });
       changed = next !== data;
       return next;
     });
@@ -1216,4 +1260,4 @@ module.exports.__test = { parse, resolve, bucket, rebuild, keyOf, autolink,
   roundTime, normalizeTimes, protect, unlink, GEN_LINE, parseGhUrl, commitEntry, prEntry,
   reviewEntry, prToEntries, commitsToEntries, reviewsToEntries, tidy,
   insertEntry, minutesOf, monthSkeleton, monthChoices, weekOfMonth, headingKey,
-  ensureDay, parseTimeInput, nowRounded, calendarGrid, isFuture };
+  ensureDay, insertByKey, parseTimeInput, nowRounded, calendarGrid, isFuture, firstDayOfWeek };
