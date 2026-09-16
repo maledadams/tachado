@@ -3,7 +3,7 @@
 const Module = require('module');
 const real = Module._load;
 Module._load = function (req, ...rest) {
-  if (req === 'obsidian') return { Plugin: class {}, Notice: class {}, EditorSuggest: class {}, PluginSettingTab: class {}, Setting: class {}, SuggestModal: class {} };
+  if (req === 'obsidian') return { Plugin: class {}, Notice: class {}, EditorSuggest: class {}, PluginSettingTab: class {}, Setting: class {}, SuggestModal: class {}, Modal: class {} };
   if (req === '@codemirror/view') return { ViewPlugin: { fromClass: () => ({}) }, Decoration: { mark: () => ({}) } };
   if (req === '@codemirror/state') return { RangeSetBuilder: class {} };
   return real(req, ...rest);
@@ -12,7 +12,8 @@ const T = require('./main.js').__test;
 const { rebuild, autolink, yearIndexNote, countStates, ENTITY_TEMPLATE, KINDS,
         roundTime, normalizeTimes, unlink, GEN_LINE, parseGhUrl, commitEntry, prEntry, reviewEntry,
         prToEntries, commitsToEntries, reviewsToEntries, tidy, insertEntry, minutesOf,
-        monthSkeleton, monthChoices } = T;
+        monthSkeleton, monthChoices, weekOfMonth, ensureDay, parseTimeInput,
+        nowRounded, calendarGrid, isFuture } = T;
 let n = 0;
 const ok = (name, cond) => { n++; if (!cond) { console.error('FAIL:', name); process.exit(1); } };
 const has = (out, s) => out.includes(s);
@@ -183,6 +184,8 @@ ok('index links the day',   o.includes('[[#Tue, September, 1:|Tue 1]]'));
 ok('index sits below the title', o.indexOf('# SEPTEMBER 2026') < o.indexOf('%% tachado:index %%'));
 ok('index is idempotent',   rebuild(o, [], { year: '2026' }) === o);
 ok('no blank-line drift',   !/\n{3,}/.test(o));
+ok('headings are never crowded',
+   o.split('\n').every((l, i, all) => !/^#{1,6}\s/.test(l) || i === 0 || all[i - 1] === ''));
 }
 
 /* ---- year index + counts ---- */
@@ -344,6 +347,12 @@ ok('appends when latest', insertEntry(day.slice(), 0, '5:00 p.m. : last')[4] ===
 ok('prepends when earliest', insertEntry(day.slice(), 0, '8:00 a.m. : early')[2] === '8:00 a.m. : early');
 ok('stays inside the day', insertEntry(day.slice(), 0, '5:00 p.m. : last')
    .indexOf('5:00 p.m. : last') < day.indexOf('### Daily TO-DO Report') + 1);
+
+// the first entry of an empty day keeps the blank line under the heading
+const blank = ['## Thu, September, 10:', '', '### Daily TO-DO Report', ''];
+const filled = insertEntry(blank.slice(), 0, '9:05 a.m. : first thing');
+ok('blank line under the heading survives', filled[1] === '');
+ok('entry goes after it',                   filled[2] === '9:05 a.m. : first thing');
 }
 
 /* ---- a blank month ---- */
@@ -422,6 +431,86 @@ ok('prose mention is not a generated line', !GEN_LINE.test(prose));
 ok('signature is in the generated line',    e.line.includes(e.sig));
 ok('signature survives changing stats',
    prToEntries({ ...pr, changed_files: 99, additions: 1, deletions: 1 }, 'acme/app')[0].sig === e.sig);
+}
+
+/* ---- logging to any day ---- */
+{
+ok('week of the 1st',  weekOfMonth(2026, 8, 1) === 1);
+ok('week of the 6th',  weekOfMonth(2026, 8, 6) === 1);   // Sunday, still week 1
+ok('week of the 7th',  weekOfMonth(2026, 8, 7) === 2);   // Monday, new week
+ok('week of the 14th', weekOfMonth(2026, 8, 14) === 3);  // matches the source document
+ok('week of the 30th', weekOfMonth(2026, 8, 30) === 5);
+
+// a sparse note: only the 14th exists, as in a document converted from Word
+const sparse = () => ['# SEPTEMBER 2026', '', '# WEEK 3 OF SEPTEMBER', '',
+                      '## Mon, September, 14:', '', '### Daily TO-DO Report', '',
+                      '# END OF SEPTEMBER TO-DO REPORT', ''];
+
+let L = sparse();
+ok('finds an existing day', ensureDay(L, 2026, 8, 14) === 4 && L.length === 10);
+
+L = sparse();
+let at = ensureDay(L, 2026, 8, 15);
+ok('adds a later day in the same week', L[at] === '## Tue, September, 15:');
+ok('after the 14th',  L.indexOf('## Tue, September, 15:') > L.indexOf('## Mon, September, 14:'));
+ok('brings its report', L[at + 2] === '### Daily TO-DO Report');
+ok('no duplicate week banner', L.filter((l) => /^# WEEK 3/.test(l)).length === 1);
+
+L = sparse();
+at = ensureDay(L, 2026, 8, 2);
+ok('adds an earlier day',    L[at] === '## Wed, September, 2:');
+ok('creates its week banner', L.includes('# WEEK 1 OF SEPTEMBER'));
+ok('creates the week report', L.includes('## END OF WEEK 1 TO-DO REPORT'));
+ok('week 1 precedes week 3',  L.indexOf('# WEEK 1 OF SEPTEMBER') < L.indexOf('# WEEK 3 OF SEPTEMBER'));
+ok('day sits inside its week',
+   L.indexOf('# WEEK 1 OF SEPTEMBER') < L.indexOf('## Wed, September, 2:') &&
+   L.indexOf('## Wed, September, 2:') < L.indexOf('## END OF WEEK 1 TO-DO REPORT'));
+ok('monthly report stays last',
+   L.indexOf('# END OF SEPTEMBER TO-DO REPORT') === L.length - 2);
+
+L = sparse();
+ensureDay(L, 2026, 8, 28);
+ok('a later week lands after week 3',
+   L.indexOf('# WEEK 5 OF SEPTEMBER') > L.indexOf('# WEEK 3 OF SEPTEMBER') &&
+   L.indexOf('# WEEK 5 OF SEPTEMBER') < L.indexOf('# END OF SEPTEMBER TO-DO REPORT'));
+
+// a day added to a scaffolded month must not disturb it
+L = monthSkeleton(8, 2026).split('\n');
+const before = L.length;
+ensureDay(L, 2026, 8, 20);
+ok('scaffold already has every day', L.length === before);
+
+/* ---- the time box ---- */
+ok('12-hour with dots',  parseTimeInput('3:45 p.m.') === '3:45 p.m.');
+ok('12-hour compact',    parseTimeInput('3:45pm') === '3:45 p.m.');
+ok('hour only',          parseTimeInput('3pm') === '3:00 p.m.');
+ok('24-hour',            parseTimeInput('15:47') === '3:45 p.m.');
+ok('24-hour morning',    parseTimeInput('09:07') === '9:05 a.m.');
+ok('midnight 24-hour',   parseTimeInput('00:02') === '12:00 a.m.');
+ok('noon 24-hour',       parseTimeInput('12:00') === '12:00 p.m.');
+ok('rounds on the way in', parseTimeInput('9:13 a.m.') === '9:15 a.m.');
+ok('rejects nonsense',   parseTimeInput('later') === null);
+ok('rejects bad minutes', parseTimeInput('10:75') === null);
+ok('rejects bad hours',   parseTimeInput('26:00') === null);
+ok('now is rounded',     /^\d{1,2}:\d{2} [ap]\.m\.$/.test(nowRounded(new Date(2026, 8, 15, 14, 33))));
+ok('now rounds to 5',    nowRounded(new Date(2026, 8, 15, 14, 33)) === '2:35 p.m.');
+
+/* ---- the grid ---- */
+{
+const g = calendarGrid(2026, 8);
+ok('five rows',        g.length === 5);
+ok('monday first',     g[0][0] === null && g[0][1] === 1);   // Sept 1 2026 is a Tuesday
+ok('all days present', g.flat().filter(Boolean).length === 30);
+ok('14th is a Monday', g[2][0] === 14);
+ok('padded to whole weeks', g.every((row) => row.length === 7));
+
+const now = new Date(2026, 8, 15);
+ok('yesterday allowed', !isFuture(2026, 8, 14, now));
+ok('today allowed',     !isFuture(2026, 8, 15, now));
+ok('tomorrow blocked',  isFuture(2026, 8, 16, now));
+ok('next month blocked', isFuture(2026, 9, 1, now));
+ok('last month allowed', !isFuture(2026, 7, 31, now));
+}
 }
 
 console.log(`all ${n} checks passed`);

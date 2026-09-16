@@ -1,5 +1,5 @@
 'use strict';
-const { Plugin, Notice, EditorSuggest, PluginSettingTab, Setting, SuggestModal } = require('obsidian');
+const { Plugin, Notice, EditorSuggest, PluginSettingTab, Setting, SuggestModal, Modal } = require('obsidian');
 const { ViewPlugin, Decoration } = require('@codemirror/view');
 const { RangeSetBuilder } = require('@codemirror/state');
 
@@ -213,6 +213,100 @@ function autolink(line, entities) {
   });
 }
 
+/* ---------- placing a day in a month ------------------------------------- */
+
+// Which calendar week of the month a date falls in. Weeks start on Monday, so
+// the 1st is in week 1 whatever day it lands on.
+function weekOfMonth(year, monthIdx, day) {
+  let w = 1;
+  for (let d = 2; d <= day; d++) if ((new Date(year, monthIdx, d).getDay() + 6) % 7 === 0) w++;
+  return w;
+}
+
+// Sort key for the headings that make up a month note, so anything can be
+// slotted in at the right place: [week, day, rank].
+function headingKey(line, year, monthIdx) {
+  let m;
+  if ((m = line.match(/^#\s+WEEK\s+(\d+)\s+OF\s/i))) return [+m[1], 0, 0];
+  if ((m = line.match(/^##\s+END OF WEEK\s+(\d+)/i))) return [+m[1], 99, 2];
+  if (/^#\s+END OF\s.*TO-?DO/i.test(line)) return [99, 99, 3];
+  if (!/TO-?DO/i.test(line) && (m = line.match(H_DAY)))
+    return [weekOfMonth(year, monthIdx, +m[2]), +m[2], 1];
+  return null;
+}
+
+const cmpKey = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+
+function insertByKey(lines, year, monthIdx, key, block) {
+  let at = lines.length;
+  for (let i = 0; i < lines.length; i++) {
+    const k = headingKey(lines[i], year, monthIdx);
+    if (k && cmpKey(k, key) > 0) { at = i; break; }
+  }
+  lines.splice(at, 0, ...block);
+  return at;
+}
+
+// Index of the heading for `day`, creating it — and its week banner and the
+// week's report — if the note doesn't have them yet.
+function ensureDay(lines, year, monthIdx, day) {
+  const isDay = (l) => {
+    const k = headingKey(l, year, monthIdx);
+    return k && k[2] === 1 && k[1] === day;
+  };
+  let at = lines.findIndex(isDay);
+  if (at >= 0) return at;
+
+  const name = MONTHS[monthIdx];
+  const week = weekOfMonth(year, monthIdx, day);
+  const hasWeek = lines.some((l) => {
+    const k = headingKey(l, year, monthIdx);
+    return k && k[2] === 0 && k[0] === week;
+  });
+  if (!hasWeek) {
+    insertByKey(lines, year, monthIdx, [week, 0, 0], [`# WEEK ${week} OF ${name}`, '']);
+    insertByKey(lines, year, monthIdx, [week, 99, 2], [`## END OF WEEK ${week} TO-DO REPORT`, '']);
+  }
+
+  const dow = (new Date(year, monthIdx, day).getDay() + 6) % 7;
+  insertByKey(lines, year, monthIdx, [week, day, 1],
+    [`## ${DOW[dow]}, ${titleCase(name)}, ${day}:`, '', '### Daily TO-DO Report', '']);
+  return lines.findIndex(isDay);
+}
+
+/* ---------- time input --------------------------------------------------- */
+
+// What someone types into the time box: "3:45 p.m.", "15:45", "3pm", "9:07".
+function parseTimeInput(raw) {
+  const t = String(raw || '').trim().toLowerCase().replace(/\s+/g, '');
+  let m;
+  if ((m = t.match(/^(\d{1,2})(?::(\d{2}))?([ap])\.?m?\.?$/)))
+    return roundTime(+m[1] % 12 || 12, +(m[2] || 0), m[3]);
+  if ((m = t.match(/^(\d{1,2}):(\d{2})$/))) {
+    const h = +m[1];
+    if (h > 23 || +m[2] > 59) return null;
+    return roundTime(h % 12 || 12, +m[2], h >= 12 ? 'p' : 'a');
+  }
+  return null;
+}
+
+const nowRounded = (now = new Date()) =>
+  roundTime(now.getHours() % 12 || 12, now.getMinutes(), now.getHours() >= 12 ? 'p' : 'a');
+
+/* ---------- a month grid -------------------------------------------------- */
+
+// Weeks of a month as rows of 7, Monday first, with null for padding.
+function calendarGrid(year, monthIdx) {
+  const last = new Date(year, monthIdx + 1, 0).getDate();
+  const lead = (new Date(year, monthIdx, 1).getDay() + 6) % 7;
+  const cells = [...Array(lead).fill(null), ...Array.from({ length: last }, (_, i) => i + 1)];
+  while (cells.length % 7) cells.push(null);
+  return Array.from({ length: cells.length / 7 }, (_, i) => cells.slice(i * 7, i * 7 + 7));
+}
+
+const isFuture = (year, monthIdx, day, now = new Date()) =>
+  new Date(year, monthIdx, day) > new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
 /* ---------- a blank month ------------------------------------------------ */
 
 // Every day of the month, already grouped into calendar weeks and carrying its
@@ -379,8 +473,10 @@ function insertEntry(lines, dayAt, entry) {
     const m = minutesOf(lines[i]);
     if (m !== null && mins !== null && m > mins) { at = i; break; }
   }
-  // only trim trailing blanks when appending; mid-day insertions keep their slot
-  if (at === end) while (at > dayAt + 1 && lines[at - 1] === '') at--;
+  // only trim trailing blanks when appending, and never the blank line that
+  // separates the day heading from its body
+  if (at === end)
+    while (at > dayAt + 2 && lines[at - 1] === '') at--;
   lines.splice(at, 0, entry);
   return lines;
 }
@@ -474,7 +570,14 @@ function rebuild(text, tools = [], meta = {}) {
   // index sits at the very top, below an H1 title if the note opens with one
   const at = /^#\s/.test(out[0] || '') ? 1 : 0;
   out.splice(at, 0, ...(at ? [''] : []), ...monthIndexBlock(out, meta.year), '');
-  return out.join('\n').replace(/\n{3,}/g, '\n\n');   // one blank line, always
+
+  // every heading gets a blank line above it, whatever was inserted before it
+  const spaced = [];
+  for (const l of out) {
+    if (/^#{1,6}\s/.test(l) && spaced.length && spaced[spaced.length - 1] !== '') spaced.push('');
+    spaced.push(l);
+  }
+  return spaced.join('\n').replace(/\n{3,}/g, '\n\n');   // one blank line, always
 }
 
 const countStates = (text) => {
@@ -626,6 +729,103 @@ class TachadoSettings extends PluginSettingTab {
   }
 }
 
+/* ---------- log to any day ------------------------------------------------ */
+
+// A month grid you click a day in, then a time and what happened. Future days
+// are not selectable: this is a log, not a planner.
+class EntryModal extends Modal {
+  constructor(plugin, start = new Date()) {
+    super(plugin.app);
+    this.plugin = plugin;
+    this.now = new Date();
+    this.year = start.getFullYear();
+    this.month = start.getMonth();
+    this.day = isFuture(this.year, this.month, start.getDate(), this.now)
+      ? this.now.getDate() : start.getDate();
+    if (isFuture(this.year, this.month, 1, this.now)) {
+      this.year = this.now.getFullYear();
+      this.month = this.now.getMonth();
+      this.day = this.now.getDate();
+    }
+  }
+
+  onOpen() {
+    this.modalEl.addClass('tl-entry-modal');
+    this.titleEl.setText('Add a log entry');
+    this.draw();
+  }
+
+  shift(by) {
+    const d = new Date(this.year, this.month + by, 1);
+    if (isFuture(d.getFullYear(), d.getMonth(), 1, this.now)) return;
+    this.year = d.getFullYear();
+    this.month = d.getMonth();
+    const last = new Date(this.year, this.month + 1, 0).getDate();
+    this.day = Math.min(this.day, last);
+    if (isFuture(this.year, this.month, this.day, this.now)) this.day = this.now.getDate();
+    this.draw();
+  }
+
+  draw() {
+    const { contentEl: box } = this;
+    box.empty();
+
+    const head = box.createDiv({ cls: 'tl-cal-head' });
+    head.createEl('button', { text: '‹', cls: 'tl-cal-nav' })
+        .onclick = () => this.shift(-1);
+    head.createDiv({ cls: 'tl-cal-title', text: `${titleCase(MONTHS[this.month])} ${this.year}` });
+    const next = head.createEl('button', { text: '›', cls: 'tl-cal-nav' });
+    next.onclick = () => this.shift(1);
+    if (isFuture(this.year, this.month + 1, 1, this.now)) next.addClass('is-disabled');
+
+    const grid = box.createDiv({ cls: 'tl-cal' });
+    for (const d of DOW) grid.createDiv({ cls: 'tl-cal-dow', text: d });
+
+    for (const row of calendarGrid(this.year, this.month)) {
+      for (const d of row) {
+        if (d === null) { grid.createDiv({ cls: 'tl-cal-day is-empty' }); continue; }
+        const cell = grid.createDiv({ cls: 'tl-cal-day', text: String(d) });
+        if (isFuture(this.year, this.month, d, this.now)) { cell.addClass('is-future'); continue; }
+        if (d === this.day) cell.addClass('is-selected');
+        if (this.year === this.now.getFullYear() && this.month === this.now.getMonth()
+            && d === this.now.getDate()) cell.addClass('is-today');
+        cell.onclick = () => { this.day = d; this.draw(); this.text?.focus(); };
+      }
+    }
+
+    const row = box.createDiv({ cls: 'tl-entry-row' });
+    this.time = row.createEl('input', { cls: 'tl-entry-time', type: 'text' });
+    this.time.value = this.timeValue || nowRounded(this.now);
+    this.time.placeholder = '3:45 p.m.';
+
+    this.text = row.createEl('input', { cls: 'tl-entry-text', type: 'text' });
+    this.text.placeholder = 'what happened — or 1.D a task';
+
+    const foot = box.createDiv({ cls: 'tl-entry-foot' });
+    this.hint = foot.createDiv({ cls: 'tl-entry-hint' });
+    const add = foot.createEl('button', { text: 'Add', cls: 'mod-cta' });
+    add.onclick = () => this.submit();
+
+    for (const el of [this.time, this.text])
+      el.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); this.submit(); } };
+
+    this.text.focus();
+  }
+
+  async submit() {
+    this.timeValue = this.time.value;
+    const at = parseTimeInput(this.time.value);
+    if (!at) { this.hint.setText("Didn't understand that time"); return; }
+    const what = this.text.value.trim();
+    if (!what) { this.hint.setText('Say what happened'); return; }
+
+    try {
+      await this.plugin.addEntry(this.year, this.month, this.day, `${at} : ${what}`);
+      this.close();
+    } catch (e) { this.hint.setText(e.message); }
+  }
+}
+
 /* ---------- month picker -------------------------------------------------- */
 
 // Same shape as Obsidian's own quick switcher: type to filter, Enter to pick.
@@ -706,6 +906,14 @@ module.exports = class Tachado extends Plugin {
 
     this.addCommand({ id: 'rebuild', name: 'Rebuild TO-DO reports and index', callback: () => this.run(null, true) });
     this.addCommand({ id: 'year-index', name: 'Rebuild year index', callback: () => this.buildYear(null, true) });
+    this.addCommand({
+      id: 'add-entry',
+      name: 'Add a log entry',
+      callback: () => {
+        const f = this.app.workspace.getActiveFile();
+        new EntryModal(this, this.isMonth(f) ? this.monthDate(f) : new Date()).open();
+      },
+    });
     this.addCommand({
       id: 'new-month',
       name: 'New month note',
@@ -905,6 +1113,37 @@ module.exports = class Tachado extends Plugin {
 
   /* ---- month notes ---- */
 
+  // The month a note stands for, so the calendar opens where you already are.
+  monthDate(file) {
+    const month = MONTHS.indexOf(file.basename.toUpperCase().split(' ')[0]);
+    const year = +file.path.match(YEAR_DIR)[1];
+    return month < 0 ? new Date() : new Date(year, month, 1);
+  }
+
+  // Write one timestamped line into a day, creating the month note and the
+  // day's headings if they aren't there yet.
+  async addEntry(year, month, day, line) {
+    const path = `${year}/${MONTHS[month]} ${year}.md`;
+    let file = this.app.vault.getAbstractFileByPath(path);
+    if (!file) {
+      if (!this.app.vault.getAbstractFileByPath(String(year)))
+        await this.app.vault.createFolder(String(year));
+      file = await this.app.vault.create(path, monthSkeleton(month, year));
+    }
+
+    await this.app.vault.process(file, (data) => {
+      const lines = data.split('\n');
+      const at = ensureDay(lines, year, month, day);
+      insertEntry(lines, at, line);
+      return lines.join('\n');
+    });
+
+    if (this.app.workspace.getActiveFile()?.path !== path)
+      await this.app.workspace.getLeaf(false).openFile(file);
+    await this.run(file);
+    new Notice(`Added to ${MONTHS[month]} ${day}`);
+  }
+
   // Create (or just open) a month note, pre-filled with every day of that
   // month grouped into weeks.
   async newMonth({ month, year }) {
@@ -976,4 +1215,5 @@ module.exports.__test = { parse, resolve, bucket, rebuild, keyOf, autolink,
   monthIndexBlock, yearIndexNote, countStates, MONTHS, ENTITY_TEMPLATE, KINDS,
   roundTime, normalizeTimes, protect, unlink, GEN_LINE, parseGhUrl, commitEntry, prEntry,
   reviewEntry, prToEntries, commitsToEntries, reviewsToEntries, tidy,
-  insertEntry, minutesOf, monthSkeleton, monthChoices };
+  insertEntry, minutesOf, monthSkeleton, monthChoices, weekOfMonth, headingKey,
+  ensureDay, parseTimeInput, nowRounded, calendarGrid, isFuture };

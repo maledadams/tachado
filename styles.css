@@ -11,3 +11,33 @@
 
 .tl-dropped { opacity: .6; }
 .tl-dropped .tl-flag { font-style: normal; font-weight: 700; letter-spacing: .04em; }
+
+/* ---- the log-entry calendar ---- */
+.tl-entry-modal { max-width: 25rem; }
+
+.tl-cal-head { display: flex; align-items: center; gap: .5rem; margin-bottom: .75rem; }
+.tl-cal-title { flex: 1; text-align: center; font-weight: 600; }
+.tl-cal-nav { padding: 0 .6rem; line-height: 1.6; }
+.tl-cal-nav.is-disabled { opacity: .3; pointer-events: none; }
+
+.tl-cal { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.tl-cal-dow {
+  text-align: center; font-size: .7rem; text-transform: uppercase;
+  letter-spacing: .04em; color: var(--text-faint); padding-bottom: .25rem;
+}
+.tl-cal-day {
+  aspect-ratio: 1; display: flex; align-items: center; justify-content: center;
+  border-radius: var(--radius-s); cursor: pointer; font-variant-numeric: tabular-nums;
+}
+.tl-cal-day:hover:not(.is-future):not(.is-empty) { background: var(--background-modifier-hover); }
+.tl-cal-day.is-empty { cursor: default; }
+.tl-cal-day.is-future { color: var(--text-faint); opacity: .35; cursor: not-allowed; }
+.tl-cal-day.is-today { box-shadow: inset 0 0 0 1px var(--text-accent); }
+.tl-cal-day.is-selected { background: var(--interactive-accent); color: var(--text-on-accent); }
+
+.tl-entry-row { display: flex; gap: .5rem; margin-top: 1rem; }
+.tl-entry-time { width: 7.5rem; flex: none; font-variant-numeric: tabular-nums; }
+.tl-entry-text { flex: 1; min-width: 0; }
+
+.tl-entry-foot { display: flex; align-items: center; gap: .75rem; margin-top: .75rem; }
+.tl-entry-hint { flex: 1; font-size: .8rem; color: var(--text-error); }

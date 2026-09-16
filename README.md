@@ -9,7 +9,7 @@
 [![Obsidian](https://img.shields.io/badge/Obsidian-plugin-7C3AED?logo=obsidian&logoColor=white)](https://obsidian.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-1B7F4C.svg)](LICENSE)
 [![No build step](https://img.shields.io/badge/build-none%20required-0A7EA4)](#development)
-[![Tests](https://img.shields.io/badge/self--check-134%20passing-1B7F4C)](check.js)
+[![Tests](https://img.shields.io/badge/self--check-178%20passing-1B7F4C)](check.js)
 
 </div>
 
@@ -60,6 +60,7 @@ That's what's on disk. Greppable, diffable, portable, yours. The red-italic rend
 | 🔗 **Automatic linking** | Mention a tool or project that exists and it becomes a real wikilink — backlinks and graph included |
 | ⌨️ **`@` picker** | Type `@` for a dropdown of every tool and project, or keep typing to create a new one on the spot |
 | 🐙 **GitHub import** | Commits, PRs, merges and reviews pulled in automatically as timestamped log lines, scoped to the orgs you allow |
+| 🗓️ **Log to any past day** | A calendar you click a day in, then a time and what happened. Future days are not selectable |
 | 📅 **Month scaffolding** | Pick a month and year; the note arrives with every day already written out and grouped into calendar weeks |
 | 🕔 **5-minute clock** | Every time in the log is normalised to `9:15 a.m.`, rounded to the nearest five minutes |
 | 🗂️ **Generated indexes** | A year note with live per-month counts, and a collapsible index inside every month |
@@ -125,6 +126,34 @@ Declare a move by writing the line again later with a new suffix. Tachado links 
 | **Promote** — `D → W`, `D → M`, `W → M` | Plain next number in the target list (`2.W`) |
 | **Demote** — `M → W`, `M → D`, `W → D` | Carry namespace (`0.1.D`), arriving on the day you demoted it |
 | **Unfinished daily** → next day | Carry namespace (`0.1.D`) |
+
+---
+
+## Logging to any day
+
+**Add a log entry** opens a month grid. Click a day, type a time and what happened, press Enter.
+
+```
+ ‹      September 2026      ›
+ Mo Tu We Th Fr Sa Su
+     1  2  3  4  5  6
+  7  8  9 10 11 12 13
+ 14 15 16 17 18 19 20
+ 21 22 23 24 25 26 27
+ 28 29 30
+
+ [ 3:45 p.m. ] [ what happened — or 1.D a task ]
+```
+
+Future days are greyed out and unclickable, and you can't page past the current month — this is a log, not a planner.
+
+The time box is forgiving: `3:45 p.m.`, `3:45pm`, `3pm` and `15:47` all work, and whatever you type is rounded to the nearest five minutes on the way in. Type a task token and it behaves like any other task.
+
+If the day you pick has no heading yet, Tachado writes one — along with its week banner and that week's report — in the right place. If the whole month note doesn't exist, it gets scaffolded first.
+
+### Why not the Calendar plugin?
+
+The [Calendar](https://github.com/liamcain/obsidian-calendar-plugin) plugin is built around **one note per day**: clicking a date calls `openOrCreateDailyNote`, and it exposes no hook to do anything else. Tachado is one note per *month* on purpose, so wiring the two together would scatter a file per day across your vault — the opposite of the point. Hence the small grid above.
 
 ---
 
@@ -297,6 +326,7 @@ Both regenerate whenever you open a month note. The month index lives inside an 
 |---|---|
 | **Rebuild TO-DO reports and index** | Reparses the note, relinks tools, regenerates every report and the index |
 | **Rebuild year index** | Recounts every month in the current year folder |
+| **Add a log entry** | Calendar picker; writes a timestamped line into any past day |
 | **New month note** | Pick a month and year; creates it fully scaffolded, or opens it |
 | **New tool or project note** | Drops an `@` at the cursor to open the picker |
 | **Import GitHub activity** | Pulls commits, PRs, merges and reviews into this month |
@@ -325,7 +355,7 @@ There's no build step. `main.js` is what Obsidian loads.
 node check.js
 ```
 
-134 assertions covering the `0.N` sort order, promotion, demotion arrival day, checkbox-state preservation, multiple tasks per line, autolinking guards, index generation, both entity kinds, time rounding, GitHub entry mapping, month skeletons, generated-line handling and idempotence. No test framework.
+178 assertions covering the `0.N` sort order, promotion, demotion arrival day, checkbox-state preservation, multiple tasks per line, autolinking guards, index generation, both entity kinds, time rounding, GitHub entry mapping, month skeletons, generated-line handling, the calendar grid and idempotence. No test framework.
 
 ### Known limitation
 
