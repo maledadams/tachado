@@ -12,6 +12,7 @@ const T = require('./main.js').__test;
 const { rebuild, autolink, yearIndexNote, countStates, ENTITY_TEMPLATE, KINDS,
         roundTime, normalizeTimes, unlink, GEN_LINE, parseGhUrl, commitEntry, prEntry, reviewEntry,
         prToEntries, commitsToEntries, reviewsToEntries, tidy, insertEntry, minutesOf,
+        fillNumbers, tokensOf,
         monthSkeleton, monthChoices, weekOfMonth, ensureDay, parseTimeInput,
         nowRounded, calendarGrid, isFuture, firstDayOfWeek } = T;
 let n = 0;
@@ -673,6 +674,56 @@ ok('leaving the day before empty',
 ok('healing is stable', rebuild(o, [], meta) === o);
 ok('no report is invented for a week banner',
    !/# WEEK 3 OF SEPTEMBER\n\n### /.test(o));
+}
+
+/* ---- you never write the number yourself ---- */
+{
+const F = (t) => fillNumbers(t.split('\n')).join('\n');
+const meta = { year: '2026', month: 8, today: new Date(2026, 8, 15) };
+
+ok('bare D numbered',  F('## Mon, September, 14:\n9:00 a.m. : D : call the bank')
+                        .includes('9:00 a.m. : 1.D call the bank'));
+ok('bare W numbered',  F('## Mon, September, 14:\n9:00 a.m. : W : burn the quota')
+                        .includes('1.W burn the quota'));
+ok('bare M numbered',  F('## Mon, September, 14:\n9:00 a.m. : M : rewrite the runbook')
+                        .includes('1.M rewrite the runbook'));
+ok('no space before colon', F('## Mon, September, 14:\n9:00 a.m. : D: no space').includes('1.D no space'));
+ok('lowercase works',       F('## Mon, September, 14:\n9:00 a.m. : w : lower').includes('1.W lower'));
+
+// numbering continues from what you already wrote by hand
+ok('continues after a typed number',
+   F('## Mon, September, 14:\n9:00 a.m. : 3.D typed\n10:00 a.m. : D : bare').includes('4.D bare'));
+ok('several bare markers count up',
+   F('## Mon, September, 14:\n9:00 a.m. : D : one\n10:00 a.m. : D : two\n11:00 a.m. : D : three')
+     .match(/1\.D one[\s\S]*2\.D two[\s\S]*3\.D three/));
+ok('two on one line count up',
+   F('## Mon, September, 14:\n9:00 a.m. : D : first BUT D : second').includes('1.D first BUT 2.D second'));
+
+// each scope has its own counter, and daily numbering restarts each day
+const twoDays = F('## Mon, September, 14:\n9:00 a.m. : D : mon one\n10:00 a.m. : W : weekly\n' +
+                  '## Tue, September, 15:\n9:00 a.m. : D : tue one');
+ok('day counter restarts',  twoDays.includes('1.D mon one') && twoDays.includes('1.D tue one'));
+ok('weekly has its own',    twoDays.includes('1.W weekly'));
+
+// the guards that apply everywhere else apply here
+ok('inline code untouched', F('## Mon, September, 14:\n9:00 a.m. : run `D : x` now').includes('`D : x`'));
+ok('headings untouched',    F('## Wed, September, 16:').includes('## Wed, September, 16:'));
+ok('report rows untouched', F('## Mon, September, 14:\n- [ ] 1.D — a thing').includes('- [ ] 1.D — a thing'));
+ok('a.m. is not a marker',  F('## Mon, September, 14:\n9:00 a.m. : just prose').includes('9:00 a.m. : just prose'));
+ok('other letters ignored', F('## Mon, September, 14:\n9:00 a.m. : plan B : do it').includes('plan B : do it'));
+
+// and it flows all the way through to the report
+const out = rebuild('# SEPTEMBER 2026\n\n# WEEK 3 OF SEPTEMBER\n\n## Mon, September, 14:\n' +
+                    '9:00 a.m. : D : call the bank\n\n### Daily TO-DO Report\n', [], meta);
+ok('numbered in the body',   out.includes('9:00 a.m. : 1.D call the bank'));
+// only the 14th exists here, so the task has nowhere to move and stays native
+ok('and in the report',      out.includes('- [ ] 1.D — call the bank'));
+ok('filling is idempotent',  rebuild(out, [], meta) === out);
+
+// the live editor recognises a bare marker too, so you see the colour at once
+const hits = tokensOf('9:00 a.m. : W : burn the quota');
+ok('bare marker decorated', hits.length === 1 && hits[0].scope === 'W' && hits[0].bare === true);
+ok('its text is the rest',  'W : burn the quota'.slice(0) && hits[0].textTo === '9:00 a.m. : W : burn the quota'.length);
 }
 
 console.log(`all ${n} checks passed`);

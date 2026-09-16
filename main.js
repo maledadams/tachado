@@ -7,8 +7,12 @@ const { RangeSetBuilder } = require('@codemirror/state');
 
 // 1.D / 2.W / 3.M, or the carry namespace 0.1.D / 0.2.W ...
 // groups: 1=token 2=carry? 3=number 4=scope
+// A task marker is either numbered — 1.D, 2.W, the carry namespace 0.1.D — or
+// bare: "D :", "W :", "M :". You never have to work out the number yourself;
+// a bare marker is given one on the next rebuild.
 const TOK = /(?:^|[\s(\[])((0\.)?(\d+)\.([DWM]))(?![\w.])/;
-const TOK_G = new RegExp(TOK.source, 'g');
+const TOK_G = /(?:^|[\s(\[])((?:(?:0\.)?\d+\.([DWM])(?![\w.]))|(?:([DWMdwm])[ \t]*:(?=[ \t]|$)))/g;
+const BARE_G = /(^|[\s(\[])([DWMdwm])[ \t]*:(?=[ \t]|$)/g;
 
 // Every token on a line, with the span of text that belongs to it: from the
 // end of the token to the start of the next one. A single line really does
@@ -18,7 +22,8 @@ function tokensOf(line) {
   let m;
   TOK_G.lastIndex = 0;
   while ((m = TOK_G.exec(line))) {
-    hits.push({ scope: m[4], at: m.index + m[0].length - m[1].length, end: TOK_G.lastIndex });
+    hits.push({ scope: (m[2] || m[3]).toUpperCase(), bare: !m[2],
+                at: m.index + m[0].length - m[1].length, end: TOK_G.lastIndex });
   }
   return hits.map((h, i) => ({
     ...h,
@@ -113,6 +118,52 @@ function resolve({ mentions, states }) {
   return [...byKey.values()]
     .sort((a, b) => a.seq - b.seq)             // document order == chronological
     .map((t) => ({ ...t, state: states.get(t.key) || 'open' }));
+}
+
+// Fill in the numbers for bare markers. Numbering runs per scope and per
+// period — day for D, week for W, the note for M — continuing from the highest
+// number already written there by hand.
+function fillNumbers(lines) {
+  const top = { D: new Map(), W: new Map(), M: new Map() };
+  const at = (scope, week, day) => (scope === 'D' ? day : scope === 'W' ? week : 0);
+
+  let week = 0, day = 0;
+  const scan = (fn) => {
+    week = 0; day = 0;
+    return lines.map((line) => {
+      let m;
+      if ((m = line.match(H_WEEK))) { week = +m[1]; return line; }
+      if (/TO-?DO/i.test(line)) return line;
+      if ((m = line.match(H_DAY))) { day = +m[2]; return line; }
+      if (/^#{1,6}\s/.test(line) || /^\s*-\s*\[/.test(line)) return line;
+      return fn(line);
+    });
+  };
+
+  // highest number already used, per scope and period
+  scan((line) => {
+    protect(line, (clean) => {
+      for (const t of tokensOf(clean)) {
+        if (t.bare) continue;
+        const n = +clean.slice(t.at, t.end).replace(/^0\./, '').split('.')[0];
+        const key = at(t.scope, week, day);
+        const cur = top[t.scope];
+        if (!cur.has(key) || cur.get(key) < n) cur.set(key, n);
+      }
+      return clean;
+    });
+    return line;
+  });
+
+  return scan((line) =>
+    protect(line, (clean) =>
+      clean.replace(BARE_G, (_, lead, letter) => {
+        const scope = letter.toUpperCase();
+        const key = at(scope, week, day);
+        const n = (top[scope].get(key) || 0) + 1;
+        top[scope].set(key, n);
+        return `${lead}${n}.${scope}`;
+      })));
 }
 
 /* ---------- the 0.N rule ------------------------------------------------ */
@@ -597,6 +648,8 @@ function rebuild(text, tools = [], meta = {}) {
     return seenWeek && /^##\s+END OF WEEK\s+TO-?DO/i.test(l)
       ? `## END OF WEEK ${seenWeek} TO-DO REPORT` : l;
   });
+
+  lines = fillNumbers(lines);
 
   const doc = parse(lines.join('\n'));
   const tasks = resolve(doc);
@@ -1313,5 +1366,5 @@ module.exports.__test = { parse, resolve, bucket, rebuild, keyOf, autolink,
   monthIndexBlock, yearIndexNote, countStates, MONTHS, ENTITY_TEMPLATE, KINDS,
   roundTime, normalizeTimes, protect, unlink, GEN_LINE, parseGhUrl, commitEntry, prEntry,
   reviewEntry, prToEntries, commitsToEntries, reviewsToEntries, tidy,
-  insertEntry, minutesOf, monthSkeleton, monthChoices, weekOfMonth, headingKey,
+  insertEntry, minutesOf, monthSkeleton, fillNumbers, tokensOf, monthChoices, weekOfMonth, headingKey,
   ensureDay, insertByKey, parseTimeInput, nowRounded, calendarGrid, isFuture, firstDayOfWeek };

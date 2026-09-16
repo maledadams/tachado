@@ -9,7 +9,7 @@
 [![Obsidian](https://img.shields.io/badge/Obsidian-plugin-7C3AED?logo=obsidian&logoColor=white)](https://obsidian.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-1B7F4C.svg)](LICENSE)
 [![No build step](https://img.shields.io/badge/build-none%20required-0A7EA4)](#development)
-[![Tests](https://img.shields.io/badge/self--check-211%20passing-1B7F4C)](check.js)
+[![Tests](https://img.shields.io/badge/self--check-231%20passing-1B7F4C)](check.js)
 
 </div>
 
@@ -51,6 +51,7 @@ That's what's on disk. Greppable, diffable, portable, yours. The red-italic rend
 
 | | |
 |---|---|
+| ✍️ **You never number anything** | Write `D :`, `W :` or `M :` and the number is filled in for you, continuing from whatever is already there |
 | 🎨 **Live coloring** | `D` red, `W` orange, `M` blue — token and task text, italic, as you type |
 | ♻️ **Automatic carry-over** | An unfinished task *moves* to today as `0.1.D`, `0.2.D`… once the clock reaches it — it never sits in two lists at once |
 | 🔢 **Self-renumbering** | Carry-over slots are positional, always oldest-first. Insert an older task and everything below it shifts down |
@@ -85,10 +86,29 @@ Then in Obsidian: **Settings → Community plugins →** turn off Restricted mod
 
 ## The syntax
 
-One regex drives everything:
+### Just write the letter
+
+You never work out a number yourself. Write the scope and a colon:
+
+```markdown
+9:05 a.m. : D : revisar los comments de Eduardo
+9:30 a.m. : W : terminar el blueprint
+```
+
+and the next rebuild fills them in:
+
+```markdown
+9:05 a.m. : 1.D revisar los comments de Eduardo
+9:30 a.m. : 2.W terminar el blueprint
+```
+
+Numbering runs per scope and per period — day for `D`, week for `W`, the note for `M` — and continues from the highest number already written there by hand. Lowercase works. Bare markers are colored live as you type, so you can see one registered before it has a number.
+
+Written out in full, a marker is:
 
 ```
-(0.)?N.SCOPE
+(0.)?N.SCOPE      1.D   2.W   3.M   0.1.D
+SCOPE :           D :   W :   M :
 ```
 
 | Token | Scope | Color | Meaning |
@@ -359,7 +379,7 @@ There's no build step. `main.js` is what Obsidian loads.
 node check.js
 ```
 
-211 assertions covering the `0.N` sort order, promotion, demotion arrival day, checkbox-state preservation, multiple tasks per line, autolinking guards, index generation, both entity kinds, time rounding, GitHub entry mapping, month skeletons, generated-line handling, the calendar grid, future-day suppression and idempotence. No test framework.
+231 assertions covering the `0.N` sort order, promotion, demotion arrival day, checkbox-state preservation, multiple tasks per line, autolinking guards, index generation, bare markers, both entity kinds, time rounding, GitHub entry mapping, month skeletons, generated-line handling, the calendar grid, future-day suppression and idempotence. No test framework.
 
 ### Known limitation
 
