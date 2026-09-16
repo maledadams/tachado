@@ -3,7 +3,7 @@
 const Module = require('module');
 const real = Module._load;
 Module._load = function (req, ...rest) {
-  if (req === 'obsidian') return { Plugin: class {}, Notice: class {}, EditorSuggest: class {}, PluginSettingTab: class {}, Setting: class {} };
+  if (req === 'obsidian') return { Plugin: class {}, Notice: class {}, EditorSuggest: class {}, PluginSettingTab: class {}, Setting: class {}, SuggestModal: class {} };
   if (req === '@codemirror/view') return { ViewPlugin: { fromClass: () => ({}) }, Decoration: { mark: () => ({}) } };
   if (req === '@codemirror/state') return { RangeSetBuilder: class {} };
   return real(req, ...rest);
@@ -11,7 +11,8 @@ Module._load = function (req, ...rest) {
 const T = require('./main.js').__test;
 const { rebuild, autolink, yearIndexNote, countStates, ENTITY_TEMPLATE, KINDS,
         roundTime, normalizeTimes, parseGhUrl, commitEntry, prEntry, reviewEntry,
-        prToEntries, commitsToEntries, reviewsToEntries, tidy, insertEntry, minutesOf } = T;
+        prToEntries, commitsToEntries, reviewsToEntries, tidy, insertEntry, minutesOf,
+        monthSkeleton, monthChoices } = T;
 let n = 0;
 const ok = (name, cond) => { n++; if (!cond) { console.error('FAIL:', name); process.exit(1); } };
 const has = (out, s) => out.includes(s);
@@ -343,6 +344,53 @@ ok('appends when latest', insertEntry(day.slice(), 0, '5:00 p.m. : last')[4] ===
 ok('prepends when earliest', insertEntry(day.slice(), 0, '8:00 a.m. : early')[2] === '8:00 a.m. : early');
 ok('stays inside the day', insertEntry(day.slice(), 0, '5:00 p.m. : last')
    .indexOf('5:00 p.m. : last') < day.indexOf('### Daily TO-DO Report') + 1);
+}
+
+/* ---- a blank month ---- */
+{
+const sep = monthSkeleton(8, 2026);            // September 2026
+const line = (re) => sep.split('\n').filter((l) => re.test(l));
+
+ok('note title',        sep.startsWith('# SEPTEMBER 2026'));
+ok('every day present', line(/^## \w{3}, September, \d+:$/).length === 30);
+ok('first day',         sep.includes('## Tue, September, 1:'));
+ok('last day',          sep.includes('## Wed, September, 30:'));
+ok('weekdays correct',  sep.includes('## Mon, September, 14:') && sep.includes('## Sun, September, 13:'));
+ok('a daily report per day', line(/^### /).length === 30);
+
+// calendar weeks, Monday-start, numbered within the month
+ok('five week banners', line(/^# WEEK \d+ OF SEPTEMBER$/).length === 5);
+ok('a report per week', line(/^## END OF WEEK \d+ TO-DO REPORT$/).length === 5);
+ok('Sept 14 is in week 3',
+   sep.indexOf('# WEEK 3 OF SEPTEMBER') < sep.indexOf('## Mon, September, 14:') &&
+   sep.indexOf('## Mon, September, 14:') < sep.indexOf('# WEEK 4 OF SEPTEMBER'));
+ok('week 1 is the short one',
+   sep.slice(sep.indexOf('# WEEK 1'), sep.indexOf('# WEEK 2')).match(/^## \w{3},/gm).length === 6);
+ok('monthly report last', sep.trim().endsWith('# END OF SEPTEMBER TO-DO REPORT'));
+
+// a month that starts on a Monday gets no stub week
+const jun = monthSkeleton(5, 2026);            // June 2026 starts Monday
+ok('june starts Monday',  jun.includes('## Mon, June, 1:'));
+ok('june has five weeks', jun.split('\n').filter((l) => /^# WEEK/.test(l)).length === 5);
+
+// leap year
+ok('feb 2028 has 29 days',
+   monthSkeleton(1, 2028).split('\n').filter((l) => /^## \w{3}, February, \d+:$/.test(l)).length === 29);
+ok('feb 2026 has 28 days',
+   monthSkeleton(1, 2026).split('\n').filter((l) => /^## \w{3}, February, \d+:$/.test(l)).length === 28);
+
+// the skeleton survives a rebuild
+const built = rebuild(sep, [], { year: '2026' });
+ok('skeleton rebuilds',    built.includes('%% tachado:index %%'));
+ok('empty days say so',    built.includes('*nothing*'));
+ok('index lists every day', (built.match(/\[\[#\w{3}, September/g) || []).length === 30);
+ok('rebuild is stable',    rebuild(built, [], { year: '2026' }) === built);
+
+const choices = monthChoices(new Date(2026, 8, 15));
+ok('36 choices',       choices.length === 36);
+ok('this year first',  choices[0].label === 'JANUARY 2026');
+ok('covers next year', choices.some((c) => c.label === 'MARCH 2027'));
+ok('covers last year', choices.some((c) => c.label === 'MARCH 2025'));
 }
 
 console.log(`all ${n} checks passed`);

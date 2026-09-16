@@ -9,7 +9,7 @@
 [![Obsidian](https://img.shields.io/badge/Obsidian-plugin-7C3AED?logo=obsidian&logoColor=white)](https://obsidian.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-1B7F4C.svg)](LICENSE)
 [![No build step](https://img.shields.io/badge/build-none%20required-0A7EA4)](#development)
-[![Tests](https://img.shields.io/badge/self--check-100%20passing-1B7F4C)](check.js)
+[![Tests](https://img.shields.io/badge/self--check-123%20passing-1B7F4C)](check.js)
 
 </div>
 
@@ -60,6 +60,7 @@ That's what's on disk. Greppable, diffable, portable, yours. The red-italic rend
 | 🔗 **Automatic linking** | Mention a tool or project that exists and it becomes a real wikilink — backlinks and graph included |
 | ⌨️ **`@` picker** | Type `@` for a dropdown of every tool and project, or keep typing to create a new one on the spot |
 | 🐙 **GitHub import** | Commits, PRs, merges and reviews pulled in automatically as timestamped log lines, scoped to the orgs you allow |
+| 📅 **Month scaffolding** | Pick a month and year; the note arrives with every day already written out and grouped into calendar weeks |
 | 🕔 **5-minute clock** | Every time in the log is normalised to `9:15 a.m.`, rounded to the nearest five minutes |
 | 🗂️ **Generated indexes** | A year note with live per-month counts, and a collapsible index inside every month |
 | 📄 **One note per month** | `2026/SEPTEMBER 2026.md` holds every week, day and report. No file sprawl |
@@ -124,6 +125,38 @@ Declare a move by writing the line again later with a new suffix. Tachado links 
 | **Promote** — `D → W`, `D → M`, `W → M` | Plain next number in the target list (`2.W`) |
 | **Demote** — `M → W`, `M → D`, `W → D` | Carry namespace (`0.1.D`), arriving on the day you demoted it |
 | **Unfinished daily** → next day | Carry namespace (`0.1.D`) |
+
+---
+
+## Starting a month
+
+**New month note** opens a picker that works like Obsidian's quick switcher — type to filter, Enter to create.
+
+The note arrives complete: every day of that month, with its weekday, already grouped into weeks, each with its report heading.
+
+```markdown
+# OCTOBER 2026
+
+# WEEK 1 OF OCTOBER
+
+## Thu, October, 1:
+
+### Daily TO-DO Report
+
+## Fri, October, 2:
+
+### Daily TO-DO Report
+...
+## END OF WEEK 1 TO-DO REPORT
+
+# WEEK 2 OF OCTOBER
+...
+# END OF OCTOBER TO-DO REPORT
+```
+
+Weeks start on Monday and are numbered within the month, so Monday 14 September 2026 falls in week 3. That means a month has **five or six weeks** as often as it has four — September 2026 has five: the 1st–6th, 7th–13th, 14th–20th, 21st–27th and 28th–30th.
+
+Picking a month that already exists just opens it.
 
 ---
 
@@ -262,6 +295,7 @@ Both regenerate whenever you open a month note. The month index lives inside an 
 |---|---|
 | **Rebuild TO-DO reports and index** | Reparses the note, relinks tools, regenerates every report and the index |
 | **Rebuild year index** | Recounts every month in the current year folder |
+| **New month note** | Pick a month and year; creates it fully scaffolded, or opens it |
 | **New tool or project note** | Drops an `@` at the cursor to open the picker |
 | **Import GitHub activity** | Pulls commits, PRs, merges and reviews into this month |
 | **Expand GitHub links** | Turns bare commit/PR URLs in this note into full entries |
@@ -289,7 +323,7 @@ There's no build step. `main.js` is what Obsidian loads.
 node check.js
 ```
 
-100 assertions covering the `0.N` sort order, promotion, demotion arrival day, checkbox-state preservation, multiple tasks per line, autolinking guards, index generation, both entity kinds, time rounding, GitHub entry mapping and idempotence. No test framework.
+123 assertions covering the `0.N` sort order, promotion, demotion arrival day, checkbox-state preservation, multiple tasks per line, autolinking guards, index generation, both entity kinds, time rounding, GitHub entry mapping, month skeletons and idempotence. No test framework.
 
 ### Known limitation
 

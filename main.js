@@ -1,5 +1,5 @@
 'use strict';
-const { Plugin, Notice, EditorSuggest, PluginSettingTab, Setting } = require('obsidian');
+const { Plugin, Notice, EditorSuggest, PluginSettingTab, Setting, SuggestModal } = require('obsidian');
 const { ViewPlugin, Decoration } = require('@codemirror/view');
 const { RangeSetBuilder } = require('@codemirror/state');
 
@@ -165,6 +165,9 @@ function protect(line, fn) {
 
 /* ---------- time -------------------------------------------------------- */
 
+const DOW = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const titleCase = (s) => s[0] + s.slice(1).toLowerCase();
+
 const TIME_ANY = /(\d{1,2}):(\d{2})\s*([ap])\.?\s*m\.?/gi;
 
 // House rule: every time is on a 5-minute boundary, 12-hour, "a.m."/"p.m.".
@@ -199,6 +202,43 @@ function autolink(line, entities) {
     }
     return s;
   });
+}
+
+/* ---------- a blank month ------------------------------------------------ */
+
+// Every day of the month, already grouped into calendar weeks and carrying its
+// report headings, so a new month opens ready to write in.
+// Weeks start on Monday and are numbered within the month, which is what makes
+// Mon 14 September 2026 land in week 3. A month therefore has five or six
+// weeks as often as it has four.
+function monthSkeleton(monthIdx, year) {
+  const name = MONTHS[monthIdx];
+  const pretty = titleCase(name);
+  const last = new Date(year, monthIdx + 1, 0).getDate();
+  const out = [`# ${name} ${year}`, ''];
+  let week = 0;
+
+  for (let d = 1; d <= last; d++) {
+    const dow = (new Date(year, monthIdx, d).getDay() + 6) % 7;   // 0 = Monday
+    if (d === 1 || dow === 0) {
+      if (week) out.push(`## END OF WEEK ${week} TO-DO REPORT`, '');
+      out.push(`# WEEK ${++week} OF ${name}`, '');
+    }
+    out.push(`## ${DOW[dow]}, ${pretty}, ${d}:`, '', '### Daily TO-DO Report', '');
+  }
+
+  if (week) out.push(`## END OF WEEK ${week} TO-DO REPORT`, '');
+  out.push(`# END OF ${name} TO-DO REPORT`, '');
+  return out.join('\n') + '\n';
+}
+
+// Months offered by the picker: this year first, then next, then last.
+function monthChoices(today = new Date()) {
+  const y = today.getFullYear();
+  const out = [];
+  for (const year of [y, y + 1, y - 1])
+    for (let m = 0; m < 12; m++) out.push({ month: m, year, label: `${MONTHS[m]} ${year}` });
+  return out;
 }
 
 /* ---------- github activity --------------------------------------------- */
@@ -571,6 +611,32 @@ class TachadoSettings extends PluginSettingTab {
   }
 }
 
+/* ---------- month picker -------------------------------------------------- */
+
+// Same shape as Obsidian's own quick switcher: type to filter, Enter to pick.
+class MonthModal extends SuggestModal {
+  constructor(plugin) {
+    super(plugin.app);
+    this.plugin = plugin;
+    this.setPlaceholder('Month and year, e.g. October 2026');
+  }
+
+  getSuggestions(query) {
+    const q = query.trim().toLowerCase();
+    return monthChoices().filter((c) => !q || c.label.toLowerCase().includes(q));
+  }
+
+  renderSuggestion(choice, el) {
+    el.createEl('div', { text: choice.label });
+    const path = `${choice.year}/${choice.label}.md`;
+    el.createEl('small', {
+      text: this.app.vault.getAbstractFileByPath(path) ? 'already exists — opens it' : path,
+    });
+  }
+
+  onChooseSuggestion(choice) { this.plugin.newMonth(choice); }
+}
+
 /* ---------- tool picker -------------------------------------------------- */
 
 // Type @ to get a dropdown of every note in Tools/. Pick one to insert a
@@ -625,6 +691,11 @@ module.exports = class Tachado extends Plugin {
 
     this.addCommand({ id: 'rebuild', name: 'Rebuild TO-DO reports and index', callback: () => this.run(null, true) });
     this.addCommand({ id: 'year-index', name: 'Rebuild year index', callback: () => this.buildYear(null, true) });
+    this.addCommand({
+      id: 'new-month',
+      name: 'New month note',
+      callback: () => new MonthModal(this).open(),
+    });
     this.addCommand({ id: 'import-github', name: 'Import GitHub activity', callback: () => this.importGh(true) });
     this.addCommand({ id: 'expand-github', name: 'Expand GitHub links', callback: () => this.expandGh() });
     this.addCommand({
@@ -817,6 +888,22 @@ module.exports = class Tachado extends Plugin {
 
   /* ---- month notes ---- */
 
+  // Create (or just open) a month note, pre-filled with every day of that
+  // month grouped into weeks.
+  async newMonth({ month, year }) {
+    const path = `${year}/${MONTHS[month]} ${year}.md`;
+    let file = this.app.vault.getAbstractFileByPath(path);
+
+    if (!file) {
+      if (!this.app.vault.getAbstractFileByPath(String(year)))
+        await this.app.vault.createFolder(String(year));
+      file = await this.app.vault.create(path, monthSkeleton(month, year));
+      new Notice(`Created ${path}`);
+    }
+    await this.app.workspace.getLeaf(false).openFile(file);
+    await this.run(file);
+  }
+
   isMonth(f) {
     return f && f.extension === 'md' && YEAR_DIR.test(f.path) && !/ Index$/.test(f.basename)
       && MONTHS.some((m) => f.basename.toUpperCase().startsWith(m));
@@ -872,4 +959,4 @@ module.exports.__test = { parse, resolve, bucket, rebuild, keyOf, autolink,
   monthIndexBlock, yearIndexNote, countStates, MONTHS, ENTITY_TEMPLATE, KINDS,
   roundTime, normalizeTimes, protect, parseGhUrl, commitEntry, prEntry,
   reviewEntry, prToEntries, commitsToEntries, reviewsToEntries, tidy,
-  insertEntry, minutesOf };
+  insertEntry, minutesOf, monthSkeleton, monthChoices };
