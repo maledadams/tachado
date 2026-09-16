@@ -31,7 +31,12 @@ const RANK = { D: 0, W: 1, M: 2 };
 const MONTHS = ['JANUARY','FEBRUARY','MARCH','APRIL','MAY','JUNE','JULY',
                 'AUGUST','SEPTEMBER','OCTOBER','NOVEMBER','DECEMBER'];
 
-const TOOLS = 'Tools';                       // every tool is a note in here
+// Linkable entities. Same machinery for each: one note per thing, its own
+// folder, automatic linking, and the @ picker. Add a row to add a kind.
+const KINDS = [
+  { folder: 'Tools',    type: 'tool',    label: 'Tool',    fields: ['url:'] },
+  { folder: 'Projects', type: 'project', label: 'Project', fields: ['status: active', 'started:', 'repo:'] },
+];
 const IDX_OPEN = '%% tachado:index %%';      // Obsidian comments: invisible when reading
 const IDX_CLOSE = '%% /tachado:index %%';
 
@@ -203,10 +208,10 @@ function yearIndexNote(year, months) {
   ].join('\n');
 }
 
-const TOOL_TEMPLATE = (name) => `---
-type: tool
+const ENTITY_TEMPLATE = (name, kind) => `---
+type: ${kind.type}
 aliases: []
-url:
+${kind.fields.join('\n')}
 ---
 
 # ${name}
@@ -353,7 +358,7 @@ function paintReading(el) {
 
 // Type @ to get a dropdown of every note in Tools/. Pick one to insert a
 // wikilink, or keep typing a new name to create the tool note on the spot.
-class ToolSuggest extends EditorSuggest {
+class EntitySuggest extends EditorSuggest {
   constructor(plugin) { super(plugin.app); this.plugin = plugin; }
 
   onTrigger(cursor, editor) {
@@ -365,22 +370,27 @@ class ToolSuggest extends EditorSuggest {
 
   getSuggestions(ctx) {
     const q = ctx.query.trim().toLowerCase();
-    const hits = this.plugin.tools()
-      .filter((t) => !q || t.name.toLowerCase().includes(q) || t.aliases.some((a) => a.toLowerCase().includes(q)))
-      .map((t) => ({ name: t.name }));
-    if (q && !hits.some((h) => h.name.toLowerCase() === q)) hits.push({ name: ctx.query.trim(), create: true });
+    const hits = this.plugin.entities()
+      .filter((e) => !q || e.name.toLowerCase().includes(q) || e.aliases.some((a) => a.toLowerCase().includes(q)))
+      .map((e) => ({ name: e.name, kind: e.kind }));
+    // nothing by that name yet? offer to create it, in either folder
+    if (q && !hits.some((h) => h.name.toLowerCase() === q))
+      for (const kind of KINDS) hits.push({ name: ctx.query.trim(), kind, create: true });
     return hits;
   }
 
   renderSuggestion(item, el) {
     el.createEl('div', { text: item.name });
-    el.createEl('small', { text: item.create ? `Create ${TOOLS}/${item.name}.md` : TOOLS });
+    el.createEl('small', {
+      text: item.create ? `New ${item.kind.label.toLowerCase()} · ${item.kind.folder}/${item.name}.md`
+                        : item.kind.label,
+    });
   }
 
   async selectSuggestion(item) {
     const { editor, start, end } = this.context;
     editor.replaceRange(`[[${item.name}]]`, start, end);
-    if (item.create) await this.plugin.createTool(item.name);
+    if (item.create) await this.plugin.createEntity(item.name, item.kind);
   }
 }
 
@@ -392,13 +402,13 @@ module.exports = class Tachado extends Plugin {
   async onload() {
     this.registerEditorExtension(livePlugin);
     this.registerMarkdownPostProcessor(paintReading);
-    this.registerEditorSuggest(new ToolSuggest(this));
+    this.registerEditorSuggest(new EntitySuggest(this));
 
     this.addCommand({ id: 'rebuild', name: 'Rebuild TO-DO reports and index', callback: () => this.run(null, true) });
     this.addCommand({ id: 'year-index', name: 'Rebuild year index', callback: () => this.buildYear(null, true) });
     this.addCommand({
       id: 'new-tool',
-      name: 'New tool note',
+      name: 'New tool or project note',
       editorCallback: (editor) => { editor.replaceSelection('@'); this.app.workspace.trigger('editor-change', editor); },
     });
 
@@ -409,23 +419,26 @@ module.exports = class Tachado extends Plugin {
 
   /* ---- tools ---- */
 
-  tools() {
-    const folder = this.app.vault.getAbstractFileByPath(TOOLS);
-    if (!folder || !folder.children) return [];
-    return folder.children
-      .filter((f) => f.extension === 'md')
-      .map((f) => {
+  entities() {
+    const out = [];
+    for (const kind of KINDS) {
+      const folder = this.app.vault.getAbstractFileByPath(kind.folder);
+      if (!folder || !folder.children) continue;
+      for (const f of folder.children) {
+        if (f.extension !== 'md') continue;
         const fm = this.app.metadataCache.getFileCache(f)?.frontmatter || {};
         const aliases = [].concat(fm.aliases || fm.alias || []).filter((a) => typeof a === 'string');
-        return { name: f.basename, aliases, file: f };
-      });
+        out.push({ name: f.basename, aliases, kind, file: f });
+      }
+    }
+    return out;
   }
 
-  async createTool(name) {
-    const path = `${TOOLS}/${name}.md`;
+  async createEntity(name, kind) {
+    const path = `${kind.folder}/${name}.md`;
     if (this.app.vault.getAbstractFileByPath(path)) return;
-    if (!this.app.vault.getAbstractFileByPath(TOOLS)) await this.app.vault.createFolder(TOOLS);
-    await this.app.vault.create(path, TOOL_TEMPLATE(name));
+    if (!this.app.vault.getAbstractFileByPath(kind.folder)) await this.app.vault.createFolder(kind.folder);
+    await this.app.vault.create(path, ENTITY_TEMPLATE(name, kind));
     new Notice(`Created ${path}`);
   }
 
@@ -440,10 +453,10 @@ module.exports = class Tachado extends Plugin {
     const f = file || this.app.workspace.getActiveFile();
     if (!this.isMonth(f)) { if (loud) new Notice('Open a month note first, e.g. 2026/SEPTEMBER 2026.md'); return; }
     const year = f.path.match(YEAR_DIR)[1];
-    const tools = this.tools();
+    const linkables = this.entities();
     let changed = false;
     await this.app.vault.process(f, (data) => {
-      const next = rebuild(data, tools, { year });
+      const next = rebuild(data, linkables, { year });
       changed = next !== data;
       return next;
     });
@@ -479,4 +492,4 @@ module.exports = class Tachado extends Plugin {
 };
 
 module.exports.__test = { parse, resolve, bucket, rebuild, keyOf, autolink,
-  monthIndexBlock, yearIndexNote, countStates, MONTHS, TOOL_TEMPLATE };
+  monthIndexBlock, yearIndexNote, countStates, MONTHS, ENTITY_TEMPLATE, KINDS };

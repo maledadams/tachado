@@ -9,7 +9,7 @@
 [![Obsidian](https://img.shields.io/badge/Obsidian-plugin-7C3AED?logo=obsidian&logoColor=white)](https://obsidian.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-1B7F4C.svg)](LICENSE)
 [![No build step](https://img.shields.io/badge/build-none%20required-0A7EA4)](#development)
-[![Tests](https://img.shields.io/badge/self--check-42%20passing-1B7F4C)](check.js)
+[![Tests](https://img.shields.io/badge/self--check-50%20passing-1B7F4C)](check.js)
 
 </div>
 
@@ -57,8 +57,8 @@ That's what's on disk. Greppable, diffable, portable, yours. The red-italic rend
 | ⬆️ **Promotion & demotion** | Rewrite the suffix to move a task between timeframes. Up = plain number, down = carry namespace |
 | ✅ **Generated reports** | Daily, weekly and monthly TO-DO sections are rebuilt from your log, never typed by hand |
 | ~~🚫~~ **Strikethrough & DROPPED** | Native Obsidian checkboxes. `- [x]` strikes it, `- [-]` marks it `[DROPPED]` |
-| 🔗 **Automatic tool linking** | Mention a tool that exists in `Tools/` and it becomes a real wikilink — backlinks and graph included |
-| ⌨️ **`@` tool picker** | Type `@` for a dropdown of your tools, or keep typing to create a new tool note on the spot |
+| 🔗 **Automatic linking** | Mention a tool or project that exists and it becomes a real wikilink — backlinks and graph included |
+| ⌨️ **`@` picker** | Type `@` for a dropdown of every tool and project, or keep typing to create a new one on the spot |
 | 🗂️ **Generated indexes** | A year note with live per-month counts, and a collapsible index inside every month |
 | 📄 **One note per month** | `2026/SEPTEMBER 2026.md` holds every week, day and report. No file sprawl |
 | 📦 **Zero dependencies** | ~450 lines of plain JavaScript. No npm, no bundler, no build step |
@@ -135,9 +135,11 @@ your-vault/
 │   └── OCTOBER 2026.md
 ├── 2027/
 │   └── 2027 Index.md          ← generated
-└── Tools/
-    ├── Figma.md
-    └── Postgres.md
+├── Tools/
+│   ├── Figma.md
+│   └── Postgres.md
+└── Projects/
+    └── Checkout Rewrite.md
 ```
 
 Inside a month note, headings define the skeleton. The TO-DO headings are the only markers Tachado needs — it owns everything between a report heading and the next heading.
@@ -169,21 +171,28 @@ See [`example/`](example/) for a full worked month, its year index and two tool 
 
 ---
 
-## Tools and automatic linking
+## Tools, projects and automatic linking
 
-Every tool, service or project you reference is **its own note** in `Tools/`. Mention one anywhere in your log and Tachado turns it into a real wikilink, so backlinks and the graph view actually work.
+Everything you reference is **its own note**. Tools live in `Tools/`, projects in `Projects/` — same machinery for both: mention one anywhere in your log and Tachado turns it into a real wikilink, so backlinks and the graph view actually work.
 
 ```markdown
-11:00 a.m. : 1.D write the migration in postgres
+11:00 a.m. : 1.D write the migration in postgres for the checkout rewrite
                                         ↓
-11:00 a.m. : 1.D write the migration in [[Postgres|postgres]]
+11:00 a.m. : 1.D write the migration in [[Postgres|postgres]] for the [[Checkout Rewrite|checkout rewrite]]
 ```
 
 Your original casing is preserved through the alias. Frontmatter `aliases` are matched too, so `psql` and `postgresql` both resolve to the same note.
 
+| Kind | Folder | Frontmatter |
+|---|---|---|
+| **Tool** | `Tools/` | `type: tool`, `aliases`, `url` |
+| **Project** | `Projects/` | `type: project`, `aliases`, `status`, `started`, `repo` |
+
+Adding a third kind is one row in the `KINDS` array at the top of `main.js`.
+
 ### The `@` picker
 
-Type `@` anywhere to get a dropdown of every tool in `Tools/`. Keep typing to filter. If the name doesn't exist yet, the last option creates `Tools/<name>.md` from a template and links it in one keystroke.
+Type `@` anywhere to get a dropdown of every tool and project, each labelled with its kind. Keep typing to filter. If the name doesn't exist yet, you get one create option per kind — pick **Project** or **Tool** and it writes the note from the right template and links it in one keystroke.
 
 Linking is deliberately conservative — it skips inline code, URLs, markdown links, existing wikilinks, blockquotes, generated report rows, and anything shorter than three characters.
 
@@ -206,7 +215,7 @@ Both regenerate whenever you open a month note. The month index lives inside an 
 |---|---|
 | **Rebuild TO-DO reports and index** | Reparses the note, relinks tools, regenerates every report and the index |
 | **Rebuild year index** | Recounts every month in the current year folder |
-| **New tool note** | Drops an `@` at the cursor to open the tool picker |
+| **New tool or project note** | Drops an `@` at the cursor to open the picker |
 
 All of it also runs automatically whenever you open a month note — so carry-over, linking and indexes just happen.
 
@@ -231,7 +240,7 @@ There's no build step. `main.js` is what Obsidian loads.
 node check.js
 ```
 
-42 assertions covering the `0.N` sort order, promotion, demotion arrival day, checkbox-state preservation, multiple tasks per line, autolinking guards, index generation and idempotence. No test framework.
+50 assertions covering the `0.N` sort order, promotion, demotion arrival day, checkbox-state preservation, multiple tasks per line, autolinking guards, index generation, both entity kinds and idempotence. No test framework.
 
 ### Known limitation
 
@@ -258,6 +267,7 @@ Standard library only: no pandoc, no `python-docx`.
 
 - [ ] `.docx` export via Pandoc with a reference template — Arial 26 titles, Arial 20 day headings, exact task colors
 - [ ] Settings tab for colors, folder names and heading levels
+- [ ] More entity kinds (people, clients) — currently one line of code, no UI
 - [ ] Community plugin directory submission
 
 ---

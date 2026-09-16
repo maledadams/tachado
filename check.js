@@ -9,7 +9,7 @@ Module._load = function (req, ...rest) {
   return real(req, ...rest);
 };
 const T = require('./main.js').__test;
-const { rebuild, autolink, yearIndexNote, countStates } = T;
+const { rebuild, autolink, yearIndexNote, countStates, ENTITY_TEMPLATE, KINDS } = T;
 let n = 0;
 const ok = (name, cond) => { n++; if (!cond) { console.error('FAIL:', name); process.exit(1); } };
 const has = (out, s) => out.includes(s);
@@ -212,6 +212,25 @@ ok('second token is not swallowed', o.includes('2.D — "wait a week first"'));
 ok('third daily picked up',         o.includes('3.D — "read the blueprint"'));
 ok('weekly on a shared line',       !o.includes('0.1.D — "burn the quota"'));
 ok('four tasks, not two',           (o.match(/^- \[/gm) || []).length === 3);
+}
+
+/* ---- tools and projects are the same machinery ---- */
+{
+ok('two kinds registered', KINDS.length === 2);
+ok('tools folder',    KINDS.some((k) => k.folder === 'Tools' && k.type === 'tool'));
+ok('projects folder', KINDS.some((k) => k.folder === 'Projects' && k.type === 'project'));
+
+const tool = ENTITY_TEMPLATE('Dolt', KINDS[0]);
+const proj = ENTITY_TEMPLATE('WispBridge', KINDS[1]);
+ok('tool frontmatter',    tool.includes('type: tool') && tool.includes('url:'));
+ok('project frontmatter', proj.includes('type: project') && proj.includes('status: active'));
+ok('no cross-contamination', !tool.includes('status:') && !proj.includes('\nurl:'));
+
+// both kinds autolink identically
+const mixed = [{ name: 'Dolt', aliases: [] }, { name: 'WispBridge', aliases: ['wispbridge'] }];
+const out = autolink('pushed wispbridge issues to the dolt remote', mixed);
+ok('project autolinks', out.includes('[[WispBridge|wispbridge]]'));
+ok('tool autolinks',    out.includes('[[Dolt|dolt]]'));
 }
 
 console.log(`all ${n} checks passed`);
