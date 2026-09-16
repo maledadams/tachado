@@ -9,7 +9,7 @@
 [![Obsidian](https://img.shields.io/badge/Obsidian-plugin-7C3AED?logo=obsidian&logoColor=white)](https://obsidian.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-1B7F4C.svg)](LICENSE)
 [![No build step](https://img.shields.io/badge/build-none%20required-0A7EA4)](#development)
-[![Tests](https://img.shields.io/badge/self--check-123%20passing-1B7F4C)](check.js)
+[![Tests](https://img.shields.io/badge/self--check-134%20passing-1B7F4C)](check.js)
 
 </div>
 
@@ -246,7 +246,9 @@ Commits, pull requests, merges and reviews land in your log as timestamped lines
 10:15 a.m. : reviewed [acme/app#12](https://github.com/acme/app/pull/12) — approved
 ```
 
-Each entry is placed under the day it happened on, in chronological order among your other timestamped lines. Prose you wrote by hand is never reordered, and re-running never duplicates an entry — they're de-duplicated by URL.
+Each entry is placed under the day it happened on, in chronological order among your other timestamped lines. Prose you wrote by hand is never reordered.
+
+Generated lines are **records, not prose**: they are never autolinked, so a commit subject like `docs(wispbridge): …` keeps the scope the commit actually has. Re-running never duplicates, because entries are matched on a signature that survives a PR's file counts changing while it is open — and a URL you merely mentioned in a sentence never blocks the real entry from arriving.
 
 ### No token, ever
 
@@ -323,7 +325,7 @@ There's no build step. `main.js` is what Obsidian loads.
 node check.js
 ```
 
-123 assertions covering the `0.N` sort order, promotion, demotion arrival day, checkbox-state preservation, multiple tasks per line, autolinking guards, index generation, both entity kinds, time rounding, GitHub entry mapping, month skeletons and idempotence. No test framework.
+134 assertions covering the `0.N` sort order, promotion, demotion arrival day, checkbox-state preservation, multiple tasks per line, autolinking guards, index generation, both entity kinds, time rounding, GitHub entry mapping, month skeletons, generated-line handling and idempotence. No test framework.
 
 ### Known limitation
 

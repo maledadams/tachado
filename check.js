@@ -10,7 +10,7 @@ Module._load = function (req, ...rest) {
 };
 const T = require('./main.js').__test;
 const { rebuild, autolink, yearIndexNote, countStates, ENTITY_TEMPLATE, KINDS,
-        roundTime, normalizeTimes, parseGhUrl, commitEntry, prEntry, reviewEntry,
+        roundTime, normalizeTimes, unlink, GEN_LINE, parseGhUrl, commitEntry, prEntry, reviewEntry,
         prToEntries, commitsToEntries, reviewsToEntries, tidy, insertEntry, minutesOf,
         monthSkeleton, monthChoices } = T;
 let n = 0;
@@ -299,7 +299,7 @@ ok('pr carries stats', got[0].line.includes('57 files +5190 −31'));
 
 got = prToEntries({ ...pr, merged_at: iso(16, 3) }, 'acme/app');
 ok('merge adds a second entry', got.length === 2 && got[1].line.includes('merged into `master`'));
-ok('merge url is distinct',     got[0].url !== got[1].url);
+ok('merge sig is distinct',     got[0].sig !== got[1].sig);
 ok('closed, not merged', prToEntries({ ...pr, closed_at: iso(17, 0) }, 'acme/app')[1].line.includes('closed'));
 
 const commits = [
@@ -322,15 +322,15 @@ const reviews = [
 ];
 const re_ = reviewsToEntries(reviews, 'acme/app', 5, 'P', 'me');
 ok('review mapped',     re_.length === 1 && re_[0].line.includes('reviewed [acme/app#5](P) — approved'));
-ok('pending dropped',   !re_.some((e) => e.url === 'R2'));
+ok('pending dropped',   re_.length === 1 && !re_[0].line.includes('pending'));
 ok('others dropped',    !re_.some((e) => e.url === 'R3'));
 
-const dupes = [ { iso: iso(9, 0), url: 'A', line: 'a' }, { iso: iso(8, 0), url: 'A', line: 'a' },
-                { iso: iso(7, 0), url: 'B', line: 'b' }, { iso: null, url: 'C', line: 'c' } ];
+const dupes = [ { iso: iso(9, 0), url: 'A', sig: 'A', line: 'a' }, { iso: iso(8, 0), url: 'A2', sig: 'A', line: 'a' },
+                { iso: iso(7, 0), url: 'B', sig: 'B', line: 'b' }, { iso: null, url: 'C', sig: 'C', line: 'c' } ];
 const t = tidy(dupes);
-ok('tidy de-duplicates by url', t.length === 2);
-ok('tidy drops undated',        !t.some((e) => e.url === 'C'));
-ok('tidy sorts oldest first',   t[0].url === 'B');
+ok('tidy de-duplicates by signature', t.length === 2);
+ok('tidy drops undated',        !t.some((e) => e.sig === 'C'));
+ok('tidy sorts oldest first',   t[0].sig === 'B');
 }
 
 /* ---- chronological insertion ---- */
@@ -391,6 +391,37 @@ ok('36 choices',       choices.length === 36);
 ok('this year first',  choices[0].label === 'JANUARY 2026');
 ok('covers next year', choices.some((c) => c.label === 'MARCH 2027'));
 ok('covers last year', choices.some((c) => c.label === 'MARCH 2025'));
+}
+
+/* ---- generated GitHub lines are records, not prose ---- */
+{
+const iso = (h, m) => new Date(2026, 8, 15, h, m).toISOString();
+const tools = [{ name: 'WispBridge', aliases: ['wispbridge'] }, { name: 'Remargin', aliases: ['remargin'] }];
+
+const gen = '1:45 p.m. : commit [acme/app@a9d2477](https://github.com/acme/app/commit/a9d2477) — docs(wispbridge): add the structure';
+ok('generated line detected',   GEN_LINE.test(gen));
+ok('prose is not a generated line', !GEN_LINE.test('1:45 p.m. : talked about wispbridge'));
+ok('report row is not one',     !GEN_LINE.test('- [ ] 1.D — commit [a/b@c](u)'));
+
+ok('commit subject untouched',  autolink(gen, tools) === gen);
+ok('prose still autolinks',     autolink('1:45 p.m. : talked about wispbridge', tools).includes('[[WispBridge|wispbridge]]'));
+
+// already-mangled lines are repaired on the next rebuild
+const mangled = '1:45 p.m. : commit [acme/app@a9d2477](U) — docs([[WispBridge|wispbridge]]): add the structure';
+ok('repairs an aliased link', autolink(mangled, tools).includes('docs(wispbridge):'));
+ok('repairs a bare link',
+   autolink('2:25 p.m. : commit [a/b@c](U) — chore([[Remargin]]): tidy', tools).includes('chore(Remargin):'));
+ok('unlink leaves plain text', unlink('nothing to do here') === 'nothing to do here');
+
+// a URL mentioned in prose must not block the real import
+const pr = { number: 5, title: 't', html_url: 'https://github.com/acme/app/pull/5',
+             created_at: iso(14, 40), head: { ref: 'x' }, base: { ref: 'main' } };
+const e = prToEntries(pr, 'acme/app')[0];
+const prose = 'separate from the git branch and PR [acme/app#5](https://github.com/acme/app/pull/5). Teammates retrieve with `bd dolt pull`.';
+ok('prose mention is not a generated line', !GEN_LINE.test(prose));
+ok('signature is in the generated line',    e.line.includes(e.sig));
+ok('signature survives changing stats',
+   prToEntries({ ...pr, changed_files: 99, additions: 1, deletions: 1 }, 'acme/app')[0].sig === e.sig);
 }
 
 console.log(`all ${n} checks passed`);

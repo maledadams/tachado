@@ -185,9 +185,18 @@ const normalizeTimes = (line) =>
 
 /* ---------- automatic linking ------------------------------------------- */
 
+// A line this plugin generated from GitHub. Its text is a record of what the
+// commit or PR actually says, so it is never rewritten.
+const GEN_LINE = /^\s*\d{1,2}:\d{2}\s*[ap]\.\s*m\.\s*:\s*(?:commit|PR|reviewed)\s\[/i;
+
+// Wikilinks back to plain text, for lines that should never have had them.
+const unlink = (line) =>
+  line.replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, '$2').replace(/\[\[([^\]]+)\]\]/g, '$1');
+
 // Turn bare mentions of an existing tool or project into wikilinks, so
 // backlinks and the graph actually see them.
 function autolink(line, entities) {
+  if (GEN_LINE.test(line)) return unlink(line);
   if (!entities.length || /^\s*(```|>|-\s*\[)/.test(line)) return line;
 
   return protect(line, (s, hold) => {
@@ -264,9 +273,10 @@ const stats = (s) =>
     ? ` · ${s.files} files +${s.additions} −${s.deletions}`
     : '';
 
+const commitSig = (owner, repo, sha) => `[${slug(owner, repo)}@${String(sha).slice(0, 7)}]`;
+
 function commitEntry(c) {
-  const short = String(c.sha).slice(0, 7);
-  return `${stamp(c.date)} : commit [${slug(c.owner, c.repo)}@${short}](${c.url})` +
+  return `${stamp(c.date)} : commit ${commitSig(c.owner, c.repo, c.sha)}(${c.url})` +
          ` — ${subject(c.message)}${stats(c)}`;
 }
 
@@ -289,25 +299,29 @@ function reviewEntry(r) {
 // commits on unmerged branches, so we read the PR endpoints instead. These
 // map raw `gh` JSON onto log lines; the fetching itself lives in the plugin.
 
-const entry = (iso, url, line) => ({ iso, url, line });
+// `sig` is the part of the line that does not drift: a PR's file counts change
+// while it is open, so de-duplicating on the whole line would re-import it on
+// every run, and de-duplicating on the bare URL would collide with a URL you
+// merely mentioned in prose.
+const entry = (iso, url, sig, line) => ({ iso, url, sig, line });
 
 // repos/{owner}/{repo}/pulls/{n}
 function prToEntries(pr, repoFull) {
   const [owner, repo] = repoFull.split('/');
   const base = { owner, repo, number: pr.number, url: pr.html_url };
-  const out = [entry(pr.created_at, pr.html_url, prEntry({
+  const out = [entry(pr.created_at, pr.html_url, `#${pr.number}](${pr.html_url}) opened`, prEntry({
     ...base, action: 'opened', title: pr.title, date: pr.created_at,
     head: pr.head?.ref, base: pr.base?.ref,
     files: pr.changed_files, additions: pr.additions, deletions: pr.deletions,
   }))];
 
   if (pr.merged_at)
-    out.push(entry(pr.merged_at, pr.html_url + '#merged', prEntry({
+    out.push(entry(pr.merged_at, pr.html_url + '#merged', `#${pr.number}](${pr.html_url}) merged`, prEntry({
       ...base, action: 'merged', base: pr.base?.ref, date: pr.merged_at,
       files: pr.changed_files, additions: pr.additions, deletions: pr.deletions,
     })));
   else if (pr.closed_at)
-    out.push(entry(pr.closed_at, pr.html_url + '#closed',
+    out.push(entry(pr.closed_at, pr.html_url + '#closed', `#${pr.number}](${pr.html_url}) closed`,
                    prEntry({ ...base, action: 'closed', date: pr.closed_at })));
   return out;
 }
@@ -317,7 +331,7 @@ function commitsToEntries(list, repoFull, me) {
   const [owner, repo] = repoFull.split('/');
   return (list || [])
     .filter((c) => !me || !c.author?.login || c.author.login.toLowerCase() === me.toLowerCase())
-    .map((c) => entry(c.commit?.author?.date, c.html_url, commitEntry({
+    .map((c) => entry(c.commit?.author?.date, c.html_url, commitSig(owner, repo, c.sha), commitEntry({
       owner, repo, sha: c.sha, message: c.commit?.message, url: c.html_url,
       date: c.commit?.author?.date,
       files: c.files?.length, additions: c.stats?.additions, deletions: c.stats?.deletions,
@@ -330,7 +344,8 @@ function reviewsToEntries(list, repoFull, number, prUrl, me) {
   return (list || [])
     .filter((r) => r.state && String(r.state).toUpperCase() !== 'PENDING')
     .filter((r) => !me || r.user?.login?.toLowerCase() === me.toLowerCase())
-    .map((r) => entry(r.submitted_at, r.html_url || `${prUrl}#review`, reviewEntry({
+    .map((r) => entry(r.submitted_at, r.html_url || `${prUrl}#review`,
+                      `#${number}](${prUrl}) \u2014 ${String(r.state).toLowerCase()}`, reviewEntry({
       owner, repo, number, url: prUrl, state: r.state, date: r.submitted_at,
     })));
 }
@@ -339,7 +354,7 @@ function reviewsToEntries(list, repoFull, number, prUrl, me) {
 const tidy = (entries) => {
   const seen = new Set();
   return entries
-    .filter((e) => e && e.iso && e.line && !seen.has(e.url) && seen.add(e.url))
+    .filter((e) => e && e.iso && e.line && !seen.has(e.sig) && seen.add(e.sig))
     .sort((a, b) => a.iso.localeCompare(b.iso));
 };
 
@@ -801,7 +816,9 @@ module.exports = class Tachado extends Plugin {
     await this.app.vault.process(f, (data) => {
       const lines = data.split('\n');
       for (const e of entries) {
-        if (lines.some((l) => l.includes(e.url))) continue;
+        // only a generated line counts as already-imported; a URL you merely
+        // wrote in prose does not
+        if (lines.some((l) => GEN_LINE.test(l) && l.includes(e.sig))) continue;
         const d = new Date(e.iso);
         const at = lines.findIndex((l) => {
           const m = !/TO-?DO/i.test(l) && l.match(H_DAY);
@@ -957,6 +974,6 @@ module.exports = class Tachado extends Plugin {
 
 module.exports.__test = { parse, resolve, bucket, rebuild, keyOf, autolink,
   monthIndexBlock, yearIndexNote, countStates, MONTHS, ENTITY_TEMPLATE, KINDS,
-  roundTime, normalizeTimes, protect, parseGhUrl, commitEntry, prEntry,
+  roundTime, normalizeTimes, protect, unlink, GEN_LINE, parseGhUrl, commitEntry, prEntry,
   reviewEntry, prToEntries, commitsToEntries, reviewsToEntries, tidy,
   insertEntry, minutesOf, monthSkeleton, monthChoices };
