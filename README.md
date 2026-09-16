@@ -9,7 +9,7 @@
 [![Obsidian](https://img.shields.io/badge/Obsidian-plugin-7C3AED?logo=obsidian&logoColor=white)](https://obsidian.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-1B7F4C.svg)](LICENSE)
 [![No build step](https://img.shields.io/badge/build-none%20required-0A7EA4)](#development)
-[![Tests](https://img.shields.io/badge/self--check-37%20passing-1B7F4C)](check.js)
+[![Tests](https://img.shields.io/badge/self--check-42%20passing-1B7F4C)](check.js)
 
 </div>
 
@@ -94,7 +94,11 @@ One regex drives everything:
 | `1.M` | Monthly | 🔵 blue | A task for this month |
 | `0.1.D` | Carry | 🔴 red | Arrived from an earlier day, or demoted from a longer timeframe |
 
-Write the token anywhere on a line. The token **and everything after it on that line** takes the scope color, italicized — links included.
+Write the token anywhere on a line. Each token colors itself and the text that follows it, up to the next token or the end of the line — so a single line can carry two tasks:
+
+```markdown
+3:50 p.m. : he said 3.D "rewrite the service" BUT 4.D "wait a week first"
+```
 
 ### Carry-over is a sort, not a queue
 
@@ -227,11 +231,26 @@ There's no build step. `main.js` is what Obsidian loads.
 node check.js
 ```
 
-37 assertions covering the `0.N` sort order, promotion, demotion arrival day, checkbox-state preservation, autolinking guards, index generation and idempotence. No test framework.
+42 assertions covering the `0.N` sort order, promotion, demotion arrival day, checkbox-state preservation, multiple tasks per line, autolinking guards, index generation and idempotence. No test framework.
 
 ### Known limitation
 
 **A task's identity is its text.** Reword a task substantially and Tachado treats it as new, resetting its checkbox. This is a deliberate trade: it keeps hidden IDs out of your markdown. The upgrade path (Obsidian block references) is noted in `main.js`.
+
+---
+
+## Importing from Word
+
+Already keeping this log in Word or Google Docs? `scripts/docx2tachado.py` converts a `.docx` export into a month note.
+
+```bash
+python3 scripts/docx2tachado.py "My log.docx" --year 2026 --out ~/my-vault \
+        --tools Remargin WispBridge Dolt
+```
+
+It maps Word's outline styles onto Tachado's heading skeleton (Title → `#`, Heading 1 → `##`, Heading 3 → `###`), keeps hyperlinks, turns Google Docs' green inline-code color into backticks, and converts mentions of the tools you name into wikilinks. Report bodies are left empty on purpose — Tachado regenerates them from the log the first time you open the note.
+
+Standard library only: no pandoc, no `python-docx`.
 
 ---
 

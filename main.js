@@ -8,6 +8,24 @@ const { RangeSetBuilder } = require('@codemirror/state');
 // 1.D / 2.W / 3.M, or the carry namespace 0.1.D / 0.2.W ...
 // groups: 1=token 2=carry? 3=number 4=scope
 const TOK = /(?:^|[\s(\[])((0\.)?(\d+)\.([DWM]))(?![\w.])/;
+const TOK_G = new RegExp(TOK.source, 'g');
+
+// Every token on a line, with the span of text that belongs to it: from the
+// end of the token to the start of the next one. A single line really does
+// carry two tasks ("... 3.D \u201cdo this\u201d BUT 4.D \u201cnot yet\u201d").
+function tokensOf(line) {
+  const hits = [];
+  let m;
+  TOK_G.lastIndex = 0;
+  while ((m = TOK_G.exec(line))) {
+    hits.push({ scope: m[4], at: m.index + m[0].length - m[1].length, end: TOK_G.lastIndex });
+  }
+  return hits.map((h, i) => ({
+    ...h,
+    textFrom: h.end,
+    textTo: i + 1 < hits.length ? hits[i + 1].at : line.length,
+  }));
+}
 
 const RANK = { D: 0, W: 1, M: 2 };
 const MONTHS = ['JANUARY','FEBRUARY','MARCH','APRIL','MAY','JUNE','JULY',
@@ -66,11 +84,12 @@ function parse(text) {
     const t = line.match(TIME);
     if (t) time = t[1].replace(/\s+/g, ' ').toLowerCase().replace('a. m.', 'a.m.').replace('p. m.', 'p.m.');
 
-    const k = line.match(TOK);
-    if (!k) return;
-    const after = line.slice(line.indexOf(k[1]) + k[1].length).trim();
-    if (!after) return;                       // a bare token is a stub, skip it
-    mentions.push({ line: i, week, day, time, scope: k[4], text: after, key: keyOf(after) });
+    for (const t of tokensOf(line)) {
+      const after = line.slice(t.textFrom, t.textTo).trim();
+      if (!after) continue;                   // a bare token is a stub, skip it
+      mentions.push({ seq: mentions.length, line: i, week, day, time,
+                      scope: t.scope, text: after, key: keyOf(after) });
+    }
   });
 
   return { lines, mentions, reports, states };
@@ -87,7 +106,7 @@ function resolve({ mentions, states }) {
     else byKey.set(m.key, { ...m, origin: m.scope, lastWeek: m.week, lastDay: m.day });
   }
   return [...byKey.values()]
-    .sort((a, b) => a.line - b.line)           // document order == chronological
+    .sort((a, b) => a.seq - b.seq)             // document order == chronological
     .map((t) => ({ ...t, state: states.get(t.key) || 'open' }));
 }
 
@@ -140,7 +159,7 @@ function autolink(line, tools) {
   // longest first, so "WispBridge Core" wins over "WispBridge"
   for (const t of [...tools].sort((a, b) => b.name.length - a.name.length)) {
     for (const alias of [t.name, ...(t.aliases || [])]) {
-      if (!alias || alias.length < 3) continue;   // too short to match safely
+      if (!alias || alias.length < 2) continue;   // 1 char is too ambiguous to match
       const re = new RegExp(
         '(?<![\\w\\u00c0-\\u017f/-])(' + escapeRe(alias) + ')(?![\\w\\u00c0-\\u017f/-])', 'gi');
       s = s.replace(re, (m) => hold(m === t.name ? `[[${t.name}]]` : `[[${t.name}|${m}]]`));
@@ -259,13 +278,13 @@ function decorate(view) {
   for (const { from, to } of view.visibleRanges) {
     for (let pos = from; pos <= to; ) {
       const line = view.state.doc.lineAt(pos);
-      const m = line.text.match(TOK);
-      // ponytail: first token per line only. Your format never puts two on one line.
-      if (m && !/^\s*-\s*\[/.test(line.text)) {
-        const s = line.from + line.text.indexOf(m[1]);
-        const e = s + m[1].length;
-        b.add(s, e, Decoration.mark({ class: `tl-tok tl-${m[4]}` }));
-        if (e < line.to) b.add(e, line.to, Decoration.mark({ class: `tl-body tl-${m[4]}` }));
+      if (!/^\s*-\s*\[/.test(line.text)) {
+        for (const t of tokensOf(line.text)) {
+          b.add(line.from + t.at, line.from + t.end, Decoration.mark({ class: `tl-tok tl-${t.scope}` }));
+          if (t.textTo > t.textFrom)
+            b.add(line.from + t.textFrom, line.from + t.textTo,
+                  Decoration.mark({ class: `tl-body tl-${t.scope}` }));
+        }
       }
       pos = line.to + 1;
     }
@@ -283,39 +302,50 @@ const livePlugin = ViewPlugin.fromClass(
 
 /* ---------- live colouring (reading view) ------------------------------- */
 
+// Wrap one character range of a block in a span, splitting text nodes as
+// needed. Ranges are applied back to front so earlier offsets stay valid.
+function wrapRange(nodes, start, end, cls) {
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    const node = nodes[i].node;
+    if (!node.parentNode) continue;
+    const len = node.nodeValue.length;
+    const a = Math.max(start - nodes[i].start, 0);
+    const b = Math.min(end - nodes[i].start, len);
+    if (a >= b) continue;
+
+    let target = node;
+    if (b < len) target.splitText(b);
+    if (a > 0) target = target.splitText(a);
+    const span = document.createElement('span');
+    span.className = cls;
+    target.replaceWith(span);
+    span.appendChild(target);
+  }
+}
+
 function paintReading(el) {
-  for (const p of el.querySelectorAll('p, li')) {
-    if (p.querySelector('.tl-tok')) continue;
-    const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
-    let node, hit = null;
+  for (const block of el.querySelectorAll('p, li')) {
+    if (block.querySelector('.tl-tok')) continue;
+
+    const nodes = [];
+    let full = '';
+    const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+    let node;
     while ((node = walker.nextNode())) {
-      const m = node.nodeValue.match(TOK);
-      if (m) { hit = { node, m }; break; }
+      nodes.push({ node, start: full.length });
+      full += node.nodeValue;
     }
-    if (!hit) continue;
 
-    const { node: host, m } = hit;
-    const tail = host.splitText(host.nodeValue.indexOf(m[1]));
-    const rest = tail.splitText(m[1].length);
-    const tok = document.createElement('span');
-    tok.className = `tl-tok tl-${m[4]}`;
-    tok.textContent = m[1];
-    tail.replaceWith(tok);
+    if (/^\s*\[[ xX-]\]/.test(full)) continue;        // generated report row
+    const toks = tokensOf(full);
+    if (!toks.length) continue;
 
-    // everything after the token on this block takes the same colour
-    const after = [];
-    const w2 = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
-    let seen = false, n2;
-    while ((n2 = w2.nextNode())) {
-      if (n2 === rest) seen = true;
-      if (seen && n2.nodeValue.trim()) after.push(n2);
+    const ranges = [];
+    for (const t of toks) {
+      ranges.push([t.at, t.end, `tl-tok tl-${t.scope}`]);
+      if (t.textTo > t.textFrom) ranges.push([t.textFrom, t.textTo, `tl-body tl-${t.scope}`]);
     }
-    for (const n of after) {
-      const s = document.createElement('span');
-      s.className = `tl-body tl-${m[4]}`;
-      n.replaceWith(s);
-      s.appendChild(n);
-    }
+    for (const [a, b, cls] of ranges.reverse()) wrapRange(nodes, a, b, cls);
   }
 }
 

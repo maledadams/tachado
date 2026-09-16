@@ -141,7 +141,6 @@ const [, mon, tue, wed] = o.split('### Daily TO-DO Report').map(rep);
 ok('not on monday',            !mon.includes('big monthly thing'));
 ok('arrives tuesday as 0.1.D',  tue.includes('0.1.D — big monthly thing'));
 ok('still carried wednesday',   wed.includes('0.1.D — big monthly thing'));
-console.log(`all ${n} checks passed`);
 }
 
 /* ---- automatic linking ---- */
@@ -194,6 +193,25 @@ const y = yearIndexNote('2026', [
 ]);
 ok('year index links months', y.includes('[[SEPTEMBER 2026\\|SEPTEMBER]]'));
 ok('year index totals',       y.includes('5 open · 5 done · 1 dropped'));
+}
+
+
+/* ---- two tasks on one line (real-world: "3.D “do this” BUT 4.D “not yet”") ---- */
+{
+const d = `# WEEK 3 OF SEPTEMBER
+
+## Mon, September, 14:
+3:50 p.m. : told me 3.D "rewrite the service" BUT 4.D "wait a week first"
+4:00 p.m. : also 1.W "burn the quota" and separately 2.D "read the blueprint"
+
+### Daily TO-DO Report
+`;
+const o = rebuild(d);
+ok('first token on the line kept',  o.includes('1.D — "rewrite the service" BUT'));
+ok('second token is not swallowed', o.includes('2.D — "wait a week first"'));
+ok('third daily picked up',         o.includes('3.D — "read the blueprint"'));
+ok('weekly on a shared line',       !o.includes('0.1.D — "burn the quota"'));
+ok('four tasks, not two',           (o.match(/^- \[/gm) || []).length === 3);
 }
 
 console.log(`all ${n} checks passed`);
