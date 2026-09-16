@@ -540,8 +540,8 @@ const meta = { year: '2026', month: 8, today: new Date(2026, 8, 15) };
 const o = rebuild(doc, [], meta);
 const dayOf = (name) => o.split(`## ${name}`)[1].split(/\n## /)[0];
 
-ok('origin day lists it',      dayOf('Mon, September, 14:').includes('1.D — unfinished thing'));
-ok('today carries it',         dayOf('Tue, September, 15:').includes('0.1.D — unfinished thing'));
+ok('today holds it',           dayOf('Tue, September, 15:').includes('0.1.D — unfinished thing'));
+ok('the origin day lets go',   dayOf('Mon, September, 14:').includes('*nothing*'));
 ok('tomorrow stays empty',     dayOf('Wed, September, 16:').includes('*nothing*'));
 ok('later days stay empty',    dayOf('Thu, September, 17:').includes('*nothing*'));
 
@@ -549,6 +549,7 @@ ok('later days stay empty',    dayOf('Thu, September, 17:').includes('*nothing*'
 const later = rebuild(doc, [], { ...meta, today: new Date(2026, 8, 17) });
 ok('it appears when the day comes',
    later.split('## Thu, September, 17:')[1].split(/\n## /)[0].includes('0.1.D — unfinished thing'));
+ok('and leaves the day before', !later.split('## Wed, September, 16:')[1].split(/\n## /)[0].includes('unfinished thing'));
 
 // with no date context nothing is suppressed, so a bare rebuild still works
 ok('undated rebuild still carries', rebuild(doc, [], {}).includes('0.1.D — unfinished thing'));
@@ -591,6 +592,87 @@ const unnumbered = `# SEPTEMBER 2026
 const num = rebuild(unnumbered, [], meta);
 ok('weekly heading gets its number', num.includes('## END OF WEEK 3 TO-DO REPORT'));
 ok('and reports into it',            num.includes('1.W — a weekly thing'));
+}
+
+/* ---- a task lives in exactly one daily report ---- */
+{
+const doc = `# SEPTEMBER 2026
+
+# WEEK 3 OF SEPTEMBER
+
+## Mon, September, 14:
+9:00 a.m. : 1.D still open
+10:00 a.m. : 2.D got it done
+
+### Daily TO-DO Report
+
+- [x] 2.D — got it done
+
+## Tue, September, 15:
+
+### Daily TO-DO Report
+
+## Wed, September, 16:
+
+### Daily TO-DO Report
+`;
+// just the report block for a day, never the prose above it
+const at = (d) => {
+  const o = rebuild(doc, [], { year: '2026', month: 8, today: new Date(2026, 8, d) });
+  return (name) => (o.split(`## ${name}`)[1].split(/\n## /)[0]
+                     .split('### Daily TO-DO Report')[1] || '');
+};
+
+let day = at(16);
+ok('open task is on today only',   day('Wed, September, 16:').includes('0.1.D — still open'));
+ok('and gone from its origin',     !day('Mon, September, 14:').includes('still open'));
+ok('and gone from yesterday',      !day('Tue, September, 15:').includes('still open'));
+ok('done task stays where it was', day('Mon, September, 14:').includes('~~got it done~~'));
+ok('done task does not travel',    !day('Wed, September, 16:').includes('got it done'));
+
+day = at(14);
+ok('on its own day it is plain-numbered', day('Mon, September, 14:').includes('1.D — still open'));
+ok('not carried on day one',              !day('Mon, September, 14:').includes('0.1.D — still open'));
+
+// a month that has already passed parks open tasks on its last day
+const older = rebuild(doc, [], { year: '2026', month: 8, today: new Date(2026, 11, 1) });
+ok('past month parks at the end',
+   older.split('## Wed, September, 16:')[1].split(/\n## /)[0]
+        .split('### Daily TO-DO Report')[1].includes('still open'));
+
+// a month still ahead has nothing to carry
+const ahead = rebuild(doc, [], { year: '2026', month: 8, today: new Date(2026, 0, 1) });
+ok('future month keeps tasks at origin',
+   ahead.split('## Mon, September, 14:')[1].split(/\n## /)[0]
+        .split('### Daily TO-DO Report')[1].includes('1.D — still open'));
+}
+
+/* ---- a day with no report heading gets one ---- */
+{
+const meta = { year: '2026', month: 8, today: new Date(2026, 8, 16) };
+const noReport = `# SEPTEMBER 2026
+
+# WEEK 3 OF SEPTEMBER
+
+## Tue, September, 15:
+9:00 a.m. : 1.D unfinished
+
+### Daily TO-DO Report
+
+## Wed, September, 16:
+
+# END OF SEPTEMBER TO-DO REPORT
+`;
+const o = rebuild(noReport, [], meta);
+ok('missing report heading added', (o.match(/^### Daily TO-DO Report$/gm) || []).length === 2);
+ok('and the task moves into it',
+   o.split('## Wed, September, 16:')[1].split(/\n# /)[0].includes('0.1.D — unfinished'));
+ok('leaving the day before empty',
+   o.split('## Tue, September, 15:')[1].split(/\n## /)[0]
+    .split('### Daily TO-DO Report')[1].includes('*nothing*'));
+ok('healing is stable', rebuild(o, [], meta) === o);
+ok('no report is invented for a week banner',
+   !/# WEEK 3 OF SEPTEMBER\n\n### /.test(o));
 }
 
 console.log(`all ${n} checks passed`);

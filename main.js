@@ -122,9 +122,14 @@ function resolve({ mentions, states }) {
 // own period. Promotion to a longer timeframe is always a plain number.
 const periodOf = (week, day, scope) => (scope === 'D' ? day : scope === 'W' ? week : 0);
 
-// `noCarry` is for a period that hasn't happened yet: a task carries forward
-// as days pass, it is not projected into next week's report in advance.
-function bucket(tasks, scope, periodId, noCarry) {
+// A task lives in exactly one report per scope: the day it is still open on,
+// or the day it was closed. It does not sit in Monday's list and Tuesday's at
+// the same time — carrying forward moves it.
+//
+// `home(task, arrival)` says which period a task belongs to. Without a date
+// context there is nowhere to move it to, so it stays where it was raised and
+// repeats forward, which is what an undated rebuild does.
+function bucket(tasks, scope, periodId, home) {
   const rows = [];
   for (const t of tasks) {
     if (t.scope !== scope) continue;
@@ -134,11 +139,14 @@ function bucket(tasks, scope, periodId, noCarry) {
     const arrival = demoted
       ? periodOf(t.lastWeek, t.lastDay, scope)
       : periodOf(t.week, t.day, scope);
-    if (arrival > periodId) continue;                        // hasn't arrived yet
-    if (arrival < periodId && t.state !== 'open') continue;   // closed, stop dragging it
-    const carry = demoted || arrival < periodId;
-    if (carry && noCarry) continue;                          // this period is still ahead
-    rows.push({ ...t, carry });
+
+    if (home) {
+      if (home(t, arrival, scope) !== periodId) continue;
+    } else {
+      if (arrival > periodId) continue;                        // hasn't arrived yet
+      if (arrival < periodId && t.state !== 'open') continue;   // closed, stop dragging it
+    }
+    rows.push({ ...t, carry: demoted || arrival < periodId });
   }
   // both lists stay in document order, so oldest is always first
   const carried = rows.filter((r) => r.carry);
@@ -148,7 +156,6 @@ function bucket(tasks, scope, periodId, noCarry) {
     ...native .map((t, i) => ({ ...t, num: `${i + 1}.${scope}` })),
   ];
 }
-
 
 /* ---------- shared text guards ------------------------------------------ */
 
@@ -562,6 +569,25 @@ function rebuild(text, tools = [], meta = {}) {
     return inFence ? l : autolink(normalizeTimes(l), tools);
   });
 
+  // A day heading with no report under it has nowhere to receive a carried
+  // task, so give every day one. Word exports routinely lack them.
+  {
+    const out = [];
+    for (let i = 0; i < lines.length; i++) {
+      out.push(lines[i]);
+      if (/TO-?DO/i.test(lines[i]) || !H_DAY.test(lines[i])) continue;
+      let j = i + 1, has = false;
+      while (j < lines.length && !/^#{1,2}\s/.test(lines[j])) {
+        if (H_DAILY.test(lines[j])) has = true;
+        j++;
+      }
+      for (let k = i + 1; k < j; k++) out.push(lines[k]);
+      if (!has) out.push('', '### Daily TO-DO Report', '');
+      i = j - 1;
+    }
+    lines = out;
+  }
+
   // a weekly report converted from Word arrives as "END OF WEEK TO-DO REPORT";
   // label it with the week it sits in so it can be sorted and reported on
   let seenWeek = 0;
@@ -576,15 +602,43 @@ function rebuild(text, tools = [], meta = {}) {
   const tasks = resolve(doc);
   const out = doc.lines.slice();
 
-  // A report for a day or week that hasn't arrived yet stays empty.
+  // Where the clock currently stands inside this note's month. A month that
+  // has already passed is "at its end"; one still ahead has not started.
   const y = +meta.year, mo = meta.month;
   const known = Number.isFinite(y) && Number.isFinite(mo);
-  const ahead = (r) => {
-    if (!known) return false;
-    if (r.kind === 'D') return isFuture(y, mo, r.day, meta.today);
-    if (r.kind === 'W') return isFuture(y, mo, firstDayOfWeek(y, mo, r.week), meta.today);
-    return false;
-  };
+  const now = meta.today || new Date();
+  const lastDay = known ? new Date(y, mo + 1, 0).getDate() : 0;
+
+  const elapsed = !known ? 0
+    : (y < now.getFullYear() || (y === now.getFullYear() && mo < now.getMonth())) ? 1
+    : (y === now.getFullYear() && mo === now.getMonth()) ? 0 : -1;
+
+  const nowDay = elapsed > 0 ? lastDay : elapsed < 0 ? -Infinity : now.getDate();
+  const nowIn = (scope) =>
+    scope === 'D' ? nowDay
+    : scope === 'W' ? (elapsed > 0 ? weekOfMonth(y, mo, lastDay)
+                      : elapsed < 0 ? -Infinity
+                      : weekOfMonth(y, mo, now.getDate()))
+    : 0;
+
+  // Which reports this note actually has, per scope. A task can only move to a
+  // day that exists here, so a sparse note parks it on the latest one it has
+  // rather than dropping it on the floor.
+  const slots = {};
+  for (const scope of ['D', 'W', 'M'])
+    slots[scope] = [...new Set(doc.reports.filter((r) => r.kind === scope)
+      .map((r) => (scope === 'D' ? r.day : scope === 'W' ? r.week : 0)))].sort((a, b) => a - b);
+
+  // An open task rides along to wherever "now" is; a closed one stays put.
+  const home = known
+    ? (t, arrival, scope) => {
+        if (t.state !== 'open') return arrival;
+        const target = Math.max(arrival, nowIn(scope));
+        let best = arrival;
+        for (const p of slots[scope]) if (p >= arrival && p <= target) best = p;
+        return best;
+      }
+    : null;
 
   // replace each report block's body, back to front so indices stay valid
   for (const r of [...doc.reports].reverse()) {
@@ -593,7 +647,7 @@ function rebuild(text, tools = [], meta = {}) {
     while (end < out.length && !(/^#{1,6}\s/.test(out[end]) && out[end].match(/^#+/)[0].length <= level)) end++;
 
     const periodId = r.kind === 'D' ? r.day : r.kind === 'W' ? r.week : 0;
-    const rows = bucket(tasks, r.kind, periodId, ahead(r)).map(renderLine);
+    const rows = bucket(tasks, r.kind, periodId, home).map(renderLine);
     out.splice(r.at + 1, end - r.at - 1, '', ...(rows.length ? rows : ['*nothing*']), '');
   }
 

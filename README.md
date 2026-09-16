@@ -9,7 +9,7 @@
 [![Obsidian](https://img.shields.io/badge/Obsidian-plugin-7C3AED?logo=obsidian&logoColor=white)](https://obsidian.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-1B7F4C.svg)](LICENSE)
 [![No build step](https://img.shields.io/badge/build-none%20required-0A7EA4)](#development)
-[![Tests](https://img.shields.io/badge/self--check-196%20passing-1B7F4C)](check.js)
+[![Tests](https://img.shields.io/badge/self--check-211%20passing-1B7F4C)](check.js)
 
 </div>
 
@@ -52,7 +52,7 @@ That's what's on disk. Greppable, diffable, portable, yours. The red-italic rend
 | | |
 |---|---|
 | 🎨 **Live coloring** | `D` red, `W` orange, `M` blue — token and task text, italic, as you type |
-| ♻️ **Automatic carry-over** | Unfinished daily tasks reappear tomorrow as `0.1.D`, `0.2.D`… with no action from you, and only once the clock actually reaches that day |
+| ♻️ **Automatic carry-over** | An unfinished task *moves* to today as `0.1.D`, `0.2.D`… once the clock reaches it — it never sits in two lists at once |
 | 🔢 **Self-renumbering** | Carry-over slots are positional, always oldest-first. Insert an older task and everything below it shifts down |
 | ⬆️ **Promotion & demotion** | Rewrite the suffix to move a task between timeframes. Up = plain number, down = carry namespace |
 | ✅ **Generated reports** | Daily, weekly and monthly TO-DO sections are rebuilt from your log, never typed by hand |
@@ -106,7 +106,9 @@ Write the token anywhere on a line. Each token colors itself and the text that f
 3:50 p.m. : he said 3.D "rewrite the service" BUT 4.D "wait a week first"
 ```
 
-Carry-over tracks the real clock. A report for a day or week that hasn't arrived yet stays empty, even when the note already has a heading for it — scaffolding October doesn't project today's unfinished work across all thirty-one days.
+Carry-over tracks the real clock, and it **moves** a task rather than copying it. An unfinished task appears in exactly one daily report: today's. It leaves the day it was raised on. A task you finished stays struck through on the day you closed it, and never travels.
+
+A report for a day that hasn't arrived stays empty, even when the note already has a heading for it — scaffolding October doesn't project today's unfinished work across all thirty-one days.
 
 ### Carry-over is a sort, not a queue
 
@@ -357,7 +359,7 @@ There's no build step. `main.js` is what Obsidian loads.
 node check.js
 ```
 
-196 assertions covering the `0.N` sort order, promotion, demotion arrival day, checkbox-state preservation, multiple tasks per line, autolinking guards, index generation, both entity kinds, time rounding, GitHub entry mapping, month skeletons, generated-line handling, the calendar grid, future-day suppression and idempotence. No test framework.
+211 assertions covering the `0.N` sort order, promotion, demotion arrival day, checkbox-state preservation, multiple tasks per line, autolinking guards, index generation, both entity kinds, time rounding, GitHub entry mapping, month skeletons, generated-line handling, the calendar grid, future-day suppression and idempotence. No test framework.
 
 ### Known limitation
 
