@@ -1,5 +1,5 @@
 'use strict';
-const { Plugin, Notice, EditorSuggest } = require('obsidian');
+const { Plugin, Notice, EditorSuggest, PluginSettingTab, Setting } = require('obsidian');
 const { ViewPlugin, Decoration } = require('@codemirror/view');
 const { RangeSetBuilder } = require('@codemirror/state');
 
@@ -146,33 +146,188 @@ function bucket(tasks, scope, periodId) {
 }
 
 
-/* ---------- automatic linking ------------------------------------------- */
+/* ---------- shared text guards ------------------------------------------ */
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const MARK = String.fromCharCode(0xE000);                       // private-use sentinel, never in prose
+const MARK = String.fromCharCode(0xE000);    // private-use sentinel, never in prose
+const GUARDED = /\[\[[^\]]*\]\]|`[^`]*`|https?:\/\/\S+|\[[^\]]*\]\([^)]*\)/g;
 
-// Turn bare mentions of an existing tool into wikilinks, so backlinks and the
-// graph actually see them. Existing links, inline code, URLs, markdown links,
-// quotes and generated report rows are left alone.
-function autolink(line, tools) {
-  if (!tools.length || /^\s*(```|>|-\s*\[)/.test(line)) return line;
-
+// Run `fn` over a line with links, inline code and URLs held out of reach, so
+// a rewrite can never reach inside one.
+function protect(line, fn) {
   const held = [];
   const hold = (m) => MARK + (held.push(m) - 1) + MARK;
-  let s = line.replace(/\[\[[^\]]*\]\]|`[^`]*`|https?:\/\/\S+|\[[^\]]*\]\([^)]*\)/g, hold);
-
-  // longest first, so "WispBridge Core" wins over "WispBridge"
-  for (const t of [...tools].sort((a, b) => b.name.length - a.name.length)) {
-    for (const alias of [t.name, ...(t.aliases || [])]) {
-      if (!alias || alias.length < 2) continue;   // 1 char is too ambiguous to match
-      const re = new RegExp(
-        '(?<![\\w\\u00c0-\\u017f/-])(' + escapeRe(alias) + ')(?![\\w\\u00c0-\\u017f/-])', 'gi');
-      s = s.replace(re, (m) => hold(m === t.name ? `[[${t.name}]]` : `[[${t.name}|${m}]]`));
-    }
-  }
+  let out = fn(line.replace(GUARDED, hold), hold);
   const restore = new RegExp(MARK + '(\\d+)' + MARK, 'g');
-  while (restore.test(s)) s = s.replace(restore, (_, i) => held[+i]);
-  return s;
+  while (restore.test(out)) out = out.replace(restore, (_, i) => held[+i]);
+  return out;
+}
+
+/* ---------- time -------------------------------------------------------- */
+
+const TIME_ANY = /(\d{1,2}):(\d{2})\s*([ap])\.?\s*m\.?/gi;
+
+// House rule: every time is on a 5-minute boundary, 12-hour, "a.m."/"p.m.".
+// Rounding can roll the hour, the meridiem, and past midnight.
+function roundTime(hour, minute, meridiem) {
+  let t = (hour % 12) * 60 + minute + (meridiem.toLowerCase() === 'p' ? 720 : 0);
+  t = ((Math.round(t / 5) * 5) % 1440 + 1440) % 1440;
+  const h24 = Math.floor(t / 60);
+  return `${h24 % 12 === 0 ? 12 : h24 % 12}:${String(t % 60).padStart(2, '0')} ` +
+         `${h24 >= 12 ? 'p' : 'a'}.m.`;
+}
+
+const normalizeTimes = (line) =>
+  protect(line, (s) => s.replace(TIME_ANY, (_, h, m, mer) => roundTime(+h, +m, mer)));
+
+/* ---------- automatic linking ------------------------------------------- */
+
+// Turn bare mentions of an existing tool or project into wikilinks, so
+// backlinks and the graph actually see them.
+function autolink(line, entities) {
+  if (!entities.length || /^\s*(```|>|-\s*\[)/.test(line)) return line;
+
+  return protect(line, (s, hold) => {
+    // longest first, so "WispBridge Core" wins over "WispBridge"
+    for (const e of [...entities].sort((a, b) => b.name.length - a.name.length)) {
+      for (const alias of [e.name, ...(e.aliases || [])]) {
+        if (!alias || alias.length < 2) continue;   // 1 char is too ambiguous to match
+        const re = new RegExp(
+          '(?<![\\w\\u00c0-\\u017f/-])(' + escapeRe(alias) + ')(?![\\w\\u00c0-\\u017f/-])', 'gi');
+        s = s.replace(re, (m) => hold(m === e.name ? `[[${e.name}]]` : `[[${e.name}|${m}]]`));
+      }
+    }
+    return s;
+  });
+}
+
+/* ---------- github activity --------------------------------------------- */
+
+const GH_URL = /https?:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(commit|pull)\/([\w]+)(?:\/\w*)?/;
+
+function parseGhUrl(url) {
+  const m = url.match(GH_URL);
+  return m ? { owner: m[1], repo: m[2], kind: m[3], id: m[4] } : null;
+}
+
+// An ISO timestamp -> this log's time format, on a 5-minute boundary.
+function stamp(iso) {
+  const d = new Date(iso);
+  return roundTime(d.getHours() % 12 === 0 ? 12 : d.getHours() % 12, d.getMinutes(),
+                   d.getHours() >= 12 ? 'p' : 'a');
+}
+
+const slug = (owner, repo) => `${owner}/${repo}`;
+const subject = (msg) => (msg || '').split('\n')[0].trim();
+const stats = (s) =>
+  s && (s.files || s.additions || s.deletions)
+    ? ` · ${s.files} files +${s.additions} −${s.deletions}`
+    : '';
+
+function commitEntry(c) {
+  const short = String(c.sha).slice(0, 7);
+  return `${stamp(c.date)} : commit [${slug(c.owner, c.repo)}@${short}](${c.url})` +
+         ` — ${subject(c.message)}${stats(c)}`;
+}
+
+function prEntry(p) {
+  const ref = `PR [${slug(p.owner, p.repo)}#${p.number}](${p.url})`;
+  if (p.action === 'merged') return `${stamp(p.date)} : ${ref} merged into \`${p.base}\`${stats(p)}`;
+  if (p.action === 'closed') return `${stamp(p.date)} : ${ref} closed`;
+  if (p.action === 'reopened') return `${stamp(p.date)} : ${ref} reopened`;
+  return `${stamp(p.date)} : ${ref} opened — ${subject(p.title)}` +
+         (p.head && p.base ? ` · \`${p.head}\` → \`${p.base}\`` : '') + stats(p);
+}
+
+function reviewEntry(r) {
+  const verdict = { approved: 'approved', changes_requested: 'changes requested', commented: 'commented' };
+  return `${stamp(r.date)} : reviewed [${slug(r.owner, r.repo)}#${r.number}](${r.url})` +
+         ` — ${verdict[String(r.state).toLowerCase()] || r.state}`;
+}
+
+// GitHub's /events feed trims pull-request payloads to nulls and misses
+// commits on unmerged branches, so we read the PR endpoints instead. These
+// map raw `gh` JSON onto log lines; the fetching itself lives in the plugin.
+
+const entry = (iso, url, line) => ({ iso, url, line });
+
+// repos/{owner}/{repo}/pulls/{n}
+function prToEntries(pr, repoFull) {
+  const [owner, repo] = repoFull.split('/');
+  const base = { owner, repo, number: pr.number, url: pr.html_url };
+  const out = [entry(pr.created_at, pr.html_url, prEntry({
+    ...base, action: 'opened', title: pr.title, date: pr.created_at,
+    head: pr.head?.ref, base: pr.base?.ref,
+    files: pr.changed_files, additions: pr.additions, deletions: pr.deletions,
+  }))];
+
+  if (pr.merged_at)
+    out.push(entry(pr.merged_at, pr.html_url + '#merged', prEntry({
+      ...base, action: 'merged', base: pr.base?.ref, date: pr.merged_at,
+      files: pr.changed_files, additions: pr.additions, deletions: pr.deletions,
+    })));
+  else if (pr.closed_at)
+    out.push(entry(pr.closed_at, pr.html_url + '#closed',
+                   prEntry({ ...base, action: 'closed', date: pr.closed_at })));
+  return out;
+}
+
+// repos/{owner}/{repo}/commits, or .../pulls/{n}/commits
+function commitsToEntries(list, repoFull, me) {
+  const [owner, repo] = repoFull.split('/');
+  return (list || [])
+    .filter((c) => !me || !c.author?.login || c.author.login.toLowerCase() === me.toLowerCase())
+    .map((c) => entry(c.commit?.author?.date, c.html_url, commitEntry({
+      owner, repo, sha: c.sha, message: c.commit?.message, url: c.html_url,
+      date: c.commit?.author?.date,
+      files: c.files?.length, additions: c.stats?.additions, deletions: c.stats?.deletions,
+    })));
+}
+
+// repos/{owner}/{repo}/pulls/{n}/reviews
+function reviewsToEntries(list, repoFull, number, prUrl, me) {
+  const [owner, repo] = repoFull.split('/');
+  return (list || [])
+    .filter((r) => r.state && String(r.state).toUpperCase() !== 'PENDING')
+    .filter((r) => !me || r.user?.login?.toLowerCase() === me.toLowerCase())
+    .map((r) => entry(r.submitted_at, r.html_url || `${prUrl}#review`, reviewEntry({
+      owner, repo, number, url: prUrl, state: r.state, date: r.submitted_at,
+    })));
+}
+
+// Drop anything without a timestamp, de-duplicate by url, oldest first.
+const tidy = (entries) => {
+  const seen = new Set();
+  return entries
+    .filter((e) => e && e.iso && e.line && !seen.has(e.url) && seen.add(e.url))
+    .sort((a, b) => a.iso.localeCompare(b.iso));
+};
+
+/* ---------- placing an entry in the right day ---------------------------- */
+
+// Minutes since midnight for a line that opens with a timestamp, else null.
+function minutesOf(line) {
+  const m = line.match(/^\s*(\d{1,2}):(\d{2})\s*([ap])\.?\s*m\.?/i);
+  if (!m) return null;
+  return (+m[1] % 12) * 60 + +m[2] + (m[3].toLowerCase() === 'p' ? 720 : 0);
+}
+
+// Insert a timestamped line into a day's body, in chronological order among
+// the other timestamped lines. Prose without a timestamp is never reordered.
+function insertEntry(lines, dayAt, entry) {
+  let end = dayAt + 1;
+  while (end < lines.length && !/^#{1,6}\s/.test(lines[end])) end++;
+
+  const mins = minutesOf(entry);
+  let at = end;
+  for (let i = dayAt + 1; i < end; i++) {
+    const m = minutesOf(lines[i]);
+    if (m !== null && mins !== null && m > mins) { at = i; break; }
+  }
+  // only trim trailing blanks when appending; mid-day insertions keep their slot
+  if (at === end) while (at > dayAt + 1 && lines[at - 1] === '') at--;
+  lines.splice(at, 0, entry);
+  return lines;
 }
 
 /* ---------- indexes ------------------------------------------------------ */
@@ -243,7 +398,7 @@ function rebuild(text, tools = [], meta = {}) {
   let inFence = false;
   lines = lines.map((l) => {
     if (/^\s*```/.test(l)) { inFence = !inFence; return l; }
-    return inFence ? l : autolink(l, tools);
+    return inFence ? l : autolink(normalizeTimes(l), tools);
   });
 
   const doc = parse(lines.join('\n'));
@@ -354,6 +509,68 @@ function paintReading(el) {
   }
 }
 
+/* ---------- gh ----------------------------------------------------------- */
+
+// We shell out to the GitHub CLI rather than storing a token. gh is already
+// authenticated on the machine, so no secret ever lands in the vault.
+// ponytail: desktop only, and it needs gh on PATH. The alternative was a
+// personal access token in data.json, which leaks the moment the vault is
+// pushed anywhere. Upgrade path: Obsidian's requestUrl() plus a token, if
+// mobile ever matters.
+function gh(args) {
+  return new Promise((resolve, reject) => {
+    let execFile;
+    try { ({ execFile } = require('child_process')); }
+    catch { return reject(new Error('GitHub import needs the desktop app.')); }
+
+    const PATH = [process.env.PATH, '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin']
+      .filter(Boolean).join(':');
+    execFile('gh', args, { env: { ...process.env, PATH }, maxBuffer: 32 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        if (err) {
+          const msg = (stderr || '').trim() || err.message;
+          return reject(new Error(/ENOENT/.test(msg)
+            ? 'GitHub CLI not found. Install it with: brew install gh'
+            : msg));
+        }
+        try { resolve(JSON.parse(stdout)); } catch { resolve(stdout.trim()); }
+      });
+  });
+}
+
+const DEFAULTS = { orgs: '', me: '', importOnOpen: false };
+
+class TachadoSettings extends PluginSettingTab {
+  constructor(app, plugin) { super(app, plugin); this.plugin = plugin; }
+
+  display() {
+    const { containerEl: box } = this;
+    box.empty();
+
+    new Setting(box)
+      .setName('Organisation allowlist')
+      .setDesc('Only import activity from these GitHub owners, comma separated. Leave empty for all.')
+      .addText((t) => t
+        .setPlaceholder('my-org, another-org')
+        .setValue(this.plugin.settings.orgs)
+        .onChange(async (v) => { this.plugin.settings.orgs = v; await this.plugin.save(); }));
+
+    new Setting(box)
+      .setName('GitHub username')
+      .setDesc('Whose activity to import. Left empty, Tachado asks gh who you are.')
+      .addText((t) => t
+        .setValue(this.plugin.settings.me)
+        .onChange(async (v) => { this.plugin.settings.me = v.trim(); await this.plugin.save(); }));
+
+    new Setting(box)
+      .setName('Import on open')
+      .setDesc('Pull new activity every time a month note is opened.')
+      .addToggle((t) => t
+        .setValue(this.plugin.settings.importOnOpen)
+        .onChange(async (v) => { this.plugin.settings.importOnOpen = v; await this.plugin.save(); }));
+  }
+}
+
 /* ---------- tool picker -------------------------------------------------- */
 
 // Type @ to get a dropdown of every note in Tools/. Pick one to insert a
@@ -400,12 +617,16 @@ const YEAR_DIR = /^(\d{4})\//;
 
 module.exports = class Tachado extends Plugin {
   async onload() {
+    this.settings = Object.assign({}, DEFAULTS, await this.loadData());
+    this.addSettingTab(new TachadoSettings(this.app, this));
     this.registerEditorExtension(livePlugin);
     this.registerMarkdownPostProcessor(paintReading);
     this.registerEditorSuggest(new EntitySuggest(this));
 
     this.addCommand({ id: 'rebuild', name: 'Rebuild TO-DO reports and index', callback: () => this.run(null, true) });
     this.addCommand({ id: 'year-index', name: 'Rebuild year index', callback: () => this.buildYear(null, true) });
+    this.addCommand({ id: 'import-github', name: 'Import GitHub activity', callback: () => this.importGh(true) });
+    this.addCommand({ id: 'expand-github', name: 'Expand GitHub links', callback: () => this.expandGh() });
     this.addCommand({
       id: 'new-tool',
       name: 'New tool or project note',
@@ -415,6 +636,158 @@ module.exports = class Tachado extends Plugin {
     // carry-over, linking and indexes all happen on open. No button to remember.
     this.registerEvent(this.app.workspace.on('file-open', (f) => this.run(f)));
     this.app.workspace.onLayoutReady(() => this.run(this.app.workspace.getActiveFile()));
+  }
+
+  save() { return this.saveData(this.settings); }
+
+  orgs() {
+    return this.settings.orgs.split(',').map((o) => o.trim()).filter(Boolean);
+  }
+
+  async whoami() {
+    if (!this.settings.me) {
+      this.settings.me = await gh(['api', 'user', '--jq', '.login']);
+      await this.save();
+    }
+    return this.settings.me;
+  }
+
+  /* ---- github ---- */
+
+  // Gather activity for one month. Reads the PR endpoints rather than the
+  // /events feed, which trims payloads and misses unmerged branches.
+  async collect(year, month, me) {
+    const since = new Date(year, month, 1).toISOString();
+    const until = new Date(year, month + 1, 1).toISOString();
+    const inRange = (e) => e.iso >= since && e.iso < until;
+    const orgs = this.orgs();
+    const out = [];
+
+    const owners = orgs.length ? orgs.map((o) => ['--owner', o]).flat() : [];
+    const search = async (flag) => {
+      try {
+        return await gh(['search', 'prs', flag, me, ...owners,
+                         '--limit', '60', '--json', 'number,repository']);
+      } catch { return []; }
+    };
+
+    const mine = await search('--author');
+    for (const hit of mine) {
+      const full = hit.repository?.nameWithOwner;
+      if (!full) continue;
+      try {
+        const pr = await gh(['api', `repos/${full}/pulls/${hit.number}`]);
+        out.push(...prToEntries(pr, full));
+        out.push(...commitsToEntries(await gh(['api', `repos/${full}/pulls/${hit.number}/commits`]), full, me));
+      } catch { /* a repo we lost access to; skip it */ }
+    }
+
+    for (const hit of await search('--reviewed-by')) {
+      const full = hit.repository?.nameWithOwner;
+      if (!full) continue;
+      try {
+        const pr = await gh(['api', `repos/${full}/pulls/${hit.number}`]);
+        out.push(...reviewsToEntries(
+          await gh(['api', `repos/${full}/pulls/${hit.number}/reviews`]),
+          full, hit.number, pr.html_url, me));
+      } catch { /* ignore */ }
+    }
+
+    // commits pushed straight to a default branch, for repos touched this month
+    for (const org of orgs) {
+      let repos = [];
+      try {
+        repos = await gh(['repo', 'list', org, '--limit', '100', '--json', 'nameWithOwner,pushedAt']);
+      } catch { continue; }
+      for (const r of repos) {
+        if (r.pushedAt && r.pushedAt < since) continue;
+        try {
+          out.push(...commitsToEntries(
+            await gh(['api', `repos/${r.nameWithOwner}/commits?author=${me}&since=${since}&per_page=100`]),
+            r.nameWithOwner, me));
+        } catch { /* empty repo, or no access */ }
+      }
+    }
+
+    return tidy(out).filter(inRange);
+  }
+
+  async importGh(loud) {
+    const f = this.app.workspace.getActiveFile();
+    if (!this.isMonth(f)) { if (loud) new Notice('Open a month note first'); return; }
+
+    const month = MONTHS.indexOf(f.basename.toUpperCase().split(' ')[0]);
+    const year = +f.path.match(YEAR_DIR)[1];
+    if (month < 0) return;
+
+    let entries;
+    if (loud) new Notice('Tachado: asking GitHub…');
+    try {
+      entries = await this.collect(year, month, await this.whoami());
+    } catch (e) { new Notice(`Tachado: ${e.message}`, 8000); return; }
+
+    let added = 0, skipped = 0;
+    await this.app.vault.process(f, (data) => {
+      const lines = data.split('\n');
+      for (const e of entries) {
+        if (lines.some((l) => l.includes(e.url))) continue;
+        const d = new Date(e.iso);
+        const at = lines.findIndex((l) => {
+          const m = !/TO-?DO/i.test(l) && l.match(H_DAY);
+          return m && +m[2] === d.getDate();
+        });
+        if (at < 0) { skipped++; continue; }
+        insertEntry(lines, at, e.line);
+        added++;
+      }
+      return lines.join('\n');
+    });
+
+    if (added) await this.run(f);
+    if (loud || added)
+      new Notice(`Tachado: ${added} imported` +
+                 (skipped ? `, ${skipped} skipped (no day heading)` : ''));
+  }
+
+  // Paste a commit or PR link on its own and this fills in the rest.
+  async expandGh() {
+    const f = this.app.workspace.getActiveFile();
+    if (!this.isMonth(f)) { new Notice('Open a month note first'); return; }
+
+    const data = await this.app.vault.cachedRead(f);
+    const jobs = [];
+    for (const line of data.split('\n')) {
+      if (/\]\(https?:\/\/github\.com/.test(line)) continue;   // already a link
+      const ref = parseGhUrl(line);
+      if (ref && line.includes(ref.owner)) jobs.push({ line, ref });
+    }
+    if (!jobs.length) { new Notice('No bare GitHub links found'); return; }
+
+    const swaps = new Map();
+    for (const { line, ref } of jobs) {
+      try {
+        const api = ref.kind === 'commit'
+          ? `repos/${ref.owner}/${ref.repo}/commits/${ref.id}`
+          : `repos/${ref.owner}/${ref.repo}/pulls/${ref.id}`;
+        const j = await gh(['api', api]);
+        const base = { owner: ref.owner, repo: ref.repo };
+        swaps.set(line, ref.kind === 'commit'
+          ? commitEntry({ ...base, sha: j.sha, message: j.commit?.message, url: j.html_url,
+                          date: j.commit?.author?.date, files: j.files?.length,
+                          additions: j.stats?.additions, deletions: j.stats?.deletions })
+          : prEntry({ ...base, number: j.number, title: j.title, url: j.html_url,
+                      action: j.merged ? 'merged' : j.state === 'closed' ? 'closed' : 'opened',
+                      head: j.head?.ref, base: j.base?.ref,
+                      date: j.merged_at || j.created_at, files: j.changed_files,
+                      additions: j.additions, deletions: j.deletions }));
+      } catch (e) { new Notice(`Tachado: ${e.message}`, 8000); }
+    }
+
+    if (!swaps.size) return;
+    await this.app.vault.process(f, (text) =>
+      text.split('\n').map((l) => swaps.get(l) || l).join('\n'));
+    await this.run(f);
+    new Notice(`Tachado: expanded ${swaps.size}`);
   }
 
   /* ---- tools ---- */
@@ -462,6 +835,10 @@ module.exports = class Tachado extends Plugin {
     });
     if (loud) new Notice(changed ? 'Reports and index rebuilt' : 'Already up to date');
     await this.buildYear(year);
+    if (this.settings.importOnOpen && !this._importing) {
+      this._importing = true;
+      try { await this.importGh(false); } finally { this._importing = false; }
+    }
   }
 
   /* ---- year index ---- */
@@ -492,4 +869,7 @@ module.exports = class Tachado extends Plugin {
 };
 
 module.exports.__test = { parse, resolve, bucket, rebuild, keyOf, autolink,
-  monthIndexBlock, yearIndexNote, countStates, MONTHS, ENTITY_TEMPLATE, KINDS };
+  monthIndexBlock, yearIndexNote, countStates, MONTHS, ENTITY_TEMPLATE, KINDS,
+  roundTime, normalizeTimes, protect, parseGhUrl, commitEntry, prEntry,
+  reviewEntry, prToEntries, commitsToEntries, reviewsToEntries, tidy,
+  insertEntry, minutesOf };

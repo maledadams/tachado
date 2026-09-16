@@ -3,13 +3,15 @@
 const Module = require('module');
 const real = Module._load;
 Module._load = function (req, ...rest) {
-  if (req === 'obsidian') return { Plugin: class {}, Notice: class {}, EditorSuggest: class {} };
+  if (req === 'obsidian') return { Plugin: class {}, Notice: class {}, EditorSuggest: class {}, PluginSettingTab: class {}, Setting: class {} };
   if (req === '@codemirror/view') return { ViewPlugin: { fromClass: () => ({}) }, Decoration: { mark: () => ({}) } };
   if (req === '@codemirror/state') return { RangeSetBuilder: class {} };
   return real(req, ...rest);
 };
 const T = require('./main.js').__test;
-const { rebuild, autolink, yearIndexNote, countStates, ENTITY_TEMPLATE, KINDS } = T;
+const { rebuild, autolink, yearIndexNote, countStates, ENTITY_TEMPLATE, KINDS,
+        roundTime, normalizeTimes, parseGhUrl, commitEntry, prEntry, reviewEntry,
+        prToEntries, commitsToEntries, reviewsToEntries, tidy, insertEntry, minutesOf } = T;
 let n = 0;
 const ok = (name, cond) => { n++; if (!cond) { console.error('FAIL:', name); process.exit(1); } };
 const has = (out, s) => out.includes(s);
@@ -231,6 +233,116 @@ const mixed = [{ name: 'Dolt', aliases: [] }, { name: 'WispBridge', aliases: ['w
 const out = autolink('pushed wispbridge issues to the dolt remote', mixed);
 ok('project autolinks', out.includes('[[WispBridge|wispbridge]]'));
 ok('tool autolinks',    out.includes('[[Dolt|dolt]]'));
+}
+
+/* ---- times round to the nearest 5 minutes ---- */
+{
+ok('rounds down',        roundTime(9, 13, 'a') === '9:15 a.m.');
+ok('rounds up',          roundTime(9, 38, 'a') === '9:40 a.m.');
+ok('exact stays put',    roundTime(3, 45, 'p') === '3:45 p.m.');
+ok('half rounds up',     roundTime(1, 2, 'p') === '1:00 p.m.');
+ok('rolls the hour',     roundTime(9, 58, 'a') === '10:00 a.m.');
+ok('rolls the meridiem', roundTime(11, 59, 'a') === '12:00 p.m.');
+ok('rolls past midnight', roundTime(11, 59, 'p') === '12:00 a.m.');
+ok('noon is 12 p.m.',    roundTime(12, 0, 'p') === '12:00 p.m.');
+ok('midnight is 12 a.m.', roundTime(12, 2, 'a') === '12:00 a.m.');
+
+const N = normalizeTimes;
+ok('normalises a log line', N('9:13 a.m. : did a thing') === '9:15 a.m. : did a thing');
+ok('fixes spacing',         N('9:13 a. m. : x') === '9:15 a.m. : x');
+ok('handles a range',       N('11:01 a.m. - 11:28 a.m. : x') === '11:00 a.m. - 11:30 a.m. : x');
+ok('leaves code alone',     N('run `at 9:13 a.m.` now') === 'run `at 9:13 a.m.` now');
+ok('leaves urls alone',     N('see https://x.com/9:13a.m./y') === 'see https://x.com/9:13a.m./y');
+ok('time rounding is idempotent', N(N('9:13 a.m. : x')) === N('9:13 a.m. : x'));
+}
+
+{
+const o = rebuild('# WEEK 1\n\n## Mon, September, 7:\n9:13 a.m. : 1.D fix the thing\n\n### Daily TO-DO Report\n');
+ok('rebuild rounds body times', o.includes('9:15 a.m. : 1.D fix the thing'));
+}
+
+/* ---- github activity ---- */
+{
+const iso = (h, m) => new Date(2026, 8, 15, h, m).toISOString();
+
+ok('parses a commit url', JSON.stringify(parseGhUrl('https://github.com/acme/app/commit/a9d2477abc')) ===
+   '{"owner":"acme","repo":"app","kind":"commit","id":"a9d2477abc"}');
+ok('parses a pr url',     parseGhUrl('https://github.com/acme/app/pull/5').kind === 'pull');
+ok('ignores other urls',  parseGhUrl('https://example.com/acme/app/pull/5') === null);
+
+const c = commitEntry({ owner: 'acme', repo: 'app', sha: 'a9d2477abcdef', date: iso(14, 32),
+                        message: 'feat: add the thing\nbody', url: 'U', files: 3, additions: 10, deletions: 2 });
+ok('commit is one line',    !c.includes('\n'));
+ok('commit rounds time',    c.startsWith('2:30 p.m. : '));
+ok('commit shortens sha',   c.includes('acme/app@a9d2477') && !c.includes('a9d2477abcdef'));
+ok('commit drops the body', c.includes('feat: add the thing') && !c.includes('body'));
+ok('commit shows stats',    c.includes('3 files +10 −2'));
+
+ok('pr opened', prEntry({ owner: 'a', repo: 'b', number: 5, title: 't', url: 'U', action: 'opened',
+                          head: 'x', base: 'main', date: iso(9, 1) })
+   .startsWith('9:00 a.m. : PR [a/b#5](U) opened — t'));
+ok('pr merged', prEntry({ owner: 'a', repo: 'b', number: 5, url: 'U', action: 'merged',
+                          base: 'main', date: iso(16, 3) }).includes('merged into `main`'));
+ok('review',    reviewEntry({ owner: 'a', repo: 'b', number: 5, url: 'U', state: 'APPROVED', date: iso(10, 14) })
+   .startsWith('10:15 a.m. : reviewed'));
+
+const pr = { number: 5, title: 'docs: the structure', html_url: 'https://github.com/acme/app/pull/5',
+             created_at: iso(11, 2), merged_at: null, closed_at: null,
+             head: { ref: 'docs/x' }, base: { ref: 'master' },
+             changed_files: 57, additions: 5190, deletions: 31 };
+
+let got = prToEntries(pr, 'acme/app');
+ok('pr opened entry', got.length === 1 && got[0].line.includes('opened — docs: the structure'));
+ok('pr rounds time',  got[0].line.startsWith('11:00 a.m. :'));
+ok('pr carries stats', got[0].line.includes('57 files +5190 −31'));
+
+got = prToEntries({ ...pr, merged_at: iso(16, 3) }, 'acme/app');
+ok('merge adds a second entry', got.length === 2 && got[1].line.includes('merged into `master`'));
+ok('merge url is distinct',     got[0].url !== got[1].url);
+ok('closed, not merged', prToEntries({ ...pr, closed_at: iso(17, 0) }, 'acme/app')[1].line.includes('closed'));
+
+const commits = [
+  { sha: 'a9d2477b46e', html_url: 'https://github.com/acme/app/commit/a9d2477b46e',
+    author: { login: 'me' }, commit: { message: 'docs: add structure\n\nbody', author: { date: iso(13, 43) } } },
+  { sha: 'ccc3333', html_url: 'U2', author: { login: 'someone-else' },
+    commit: { message: 'not mine', author: { date: iso(14, 0) } } },
+];
+const ce = commitsToEntries(commits, 'acme/app', 'me');
+ok('commit mapped',        ce.length === 1);
+ok('commit shortens sha',  ce[0].line.includes('acme/app@a9d2477'));
+ok('commit rounds time',   ce[0].line.startsWith('1:45 p.m. :'));
+ok('commit drops body',    !ce[0].line.includes('body'));
+ok('other authors dropped', !ce.some((e) => e.line.includes('not mine')));
+
+const reviews = [
+  { state: 'APPROVED', user: { login: 'me' }, submitted_at: iso(10, 14), html_url: 'R1' },
+  { state: 'PENDING',  user: { login: 'me' }, submitted_at: iso(10, 20), html_url: 'R2' },
+  { state: 'APPROVED', user: { login: 'other' }, submitted_at: iso(10, 30), html_url: 'R3' },
+];
+const re_ = reviewsToEntries(reviews, 'acme/app', 5, 'P', 'me');
+ok('review mapped',     re_.length === 1 && re_[0].line.includes('reviewed [acme/app#5](P) — approved'));
+ok('pending dropped',   !re_.some((e) => e.url === 'R2'));
+ok('others dropped',    !re_.some((e) => e.url === 'R3'));
+
+const dupes = [ { iso: iso(9, 0), url: 'A', line: 'a' }, { iso: iso(8, 0), url: 'A', line: 'a' },
+                { iso: iso(7, 0), url: 'B', line: 'b' }, { iso: null, url: 'C', line: 'c' } ];
+const t = tidy(dupes);
+ok('tidy de-duplicates by url', t.length === 2);
+ok('tidy drops undated',        !t.some((e) => e.url === 'C'));
+ok('tidy sorts oldest first',   t[0].url === 'B');
+}
+
+/* ---- chronological insertion ---- */
+{
+ok('reads a timestamp', minutesOf('3:45 p.m. : x') === 945);
+ok('no timestamp',      minutesOf('just prose') === null);
+
+const day = ['## Mon, September, 14:', '', '9:00 a.m. : first', '11:00 a.m. : third', '', '### Daily TO-DO Report'];
+ok('inserts in order',  insertEntry(day.slice(), 0, '10:00 a.m. : second')[3] === '10:00 a.m. : second');
+ok('appends when latest', insertEntry(day.slice(), 0, '5:00 p.m. : last')[4] === '5:00 p.m. : last');
+ok('prepends when earliest', insertEntry(day.slice(), 0, '8:00 a.m. : early')[2] === '8:00 a.m. : early');
+ok('stays inside the day', insertEntry(day.slice(), 0, '5:00 p.m. : last')
+   .indexOf('5:00 p.m. : last') < day.indexOf('### Daily TO-DO Report') + 1);
 }
 
 console.log(`all ${n} checks passed`);

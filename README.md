@@ -9,7 +9,7 @@
 [![Obsidian](https://img.shields.io/badge/Obsidian-plugin-7C3AED?logo=obsidian&logoColor=white)](https://obsidian.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-1B7F4C.svg)](LICENSE)
 [![No build step](https://img.shields.io/badge/build-none%20required-0A7EA4)](#development)
-[![Tests](https://img.shields.io/badge/self--check-50%20passing-1B7F4C)](check.js)
+[![Tests](https://img.shields.io/badge/self--check-100%20passing-1B7F4C)](check.js)
 
 </div>
 
@@ -59,6 +59,8 @@ That's what's on disk. Greppable, diffable, portable, yours. The red-italic rend
 | ~~🚫~~ **Strikethrough & DROPPED** | Native Obsidian checkboxes. `- [x]` strikes it, `- [-]` marks it `[DROPPED]` |
 | 🔗 **Automatic linking** | Mention a tool or project that exists and it becomes a real wikilink — backlinks and graph included |
 | ⌨️ **`@` picker** | Type `@` for a dropdown of every tool and project, or keep typing to create a new one on the spot |
+| 🐙 **GitHub import** | Commits, PRs, merges and reviews pulled in automatically as timestamped log lines, scoped to the orgs you allow |
+| 🕔 **5-minute clock** | Every time in the log is normalised to `9:15 a.m.`, rounded to the nearest five minutes |
 | 🗂️ **Generated indexes** | A year note with live per-month counts, and a collapsible index inside every month |
 | 📄 **One note per month** | `2026/SEPTEMBER 2026.md` holds every week, day and report. No file sprawl |
 | 📦 **Zero dependencies** | ~450 lines of plain JavaScript. No npm, no bundler, no build step |
@@ -93,6 +95,8 @@ One regex drives everything:
 | `1.W` | Weekly | 🟠 orange | A task for this week |
 | `1.M` | Monthly | 🔵 blue | A task for this month |
 | `0.1.D` | Carry | 🔴 red | Arrived from an earlier day, or demoted from a longer timeframe |
+
+Times are normalised on every rebuild: 12-hour, `a.m.`/`p.m.`, and rounded to the nearest five minutes. `9:13 a.m.` becomes `9:15 a.m.`, `11:59 p.m.` rolls to `12:00 a.m.` Inline code and URLs are left alone.
 
 Write the token anywhere on a line. Each token colors itself and the text that follows it, up to the next token or the end of the line — so a single line can carry two tasks:
 
@@ -198,6 +202,49 @@ Linking is deliberately conservative — it skips inline code, URLs, markdown li
 
 ---
 
+## GitHub activity
+
+Commits, pull requests, merges and reviews land in your log as timestamped lines, linked back to the action on GitHub.
+
+```markdown
+1:45 p.m. : commit [acme/app@a9d2477](https://github.com/acme/app/commit/a9d2477…) — docs: add the structure
+2:40 p.m. : PR [acme/app#5](https://github.com/acme/app/pull/5) opened — docs structure · `docs/x` → `master` · 57 files +5190 −31
+4:00 p.m. : PR [acme/app#5](https://github.com/acme/app/pull/5) merged into `master`
+10:15 a.m. : reviewed [acme/app#12](https://github.com/acme/app/pull/12) — approved
+```
+
+Each entry is placed under the day it happened on, in chronological order among your other timestamped lines. Prose you wrote by hand is never reordered, and re-running never duplicates an entry — they're de-duplicated by URL.
+
+### No token, ever
+
+Tachado shells out to the **[GitHub CLI](https://cli.github.com)**, which is already authenticated on your machine. No personal access token is stored in your vault, so nothing leaks if you sync or push it.
+
+```bash
+brew install gh && gh auth login
+```
+
+### Paste a link, get an entry
+
+Drop a bare commit or PR URL on a line and run **Expand GitHub links**. Tachado fetches the title, stats, branches and the real timestamp, then rewrites the line as a full entry.
+
+```markdown
+https://github.com/acme/app/pull/5
+                    ↓
+2:40 p.m. : PR [acme/app#5](…) opened — docs structure · `docs/x` → `master` · 57 files +5190 −31
+```
+
+### Settings
+
+| Setting | What it does |
+|---|---|
+| **Organisation allowlist** | Only import activity from these GitHub owners. Empty means all of them. |
+| **GitHub username** | Whose activity to import. Left blank, Tachado asks `gh` who you are. |
+| **Import on open** | Pull new activity every time you open a month note. |
+
+> Why the PR endpoints and not `/events`? GitHub's events feed trims pull-request payloads to nulls and never sees commits on branches that haven't merged — so half your work would go missing.
+
+---
+
 ## Indexes
 
 | Index | Where | Contents |
@@ -216,6 +263,8 @@ Both regenerate whenever you open a month note. The month index lives inside an 
 | **Rebuild TO-DO reports and index** | Reparses the note, relinks tools, regenerates every report and the index |
 | **Rebuild year index** | Recounts every month in the current year folder |
 | **New tool or project note** | Drops an `@` at the cursor to open the picker |
+| **Import GitHub activity** | Pulls commits, PRs, merges and reviews into this month |
+| **Expand GitHub links** | Turns bare commit/PR URLs in this note into full entries |
 
 All of it also runs automatically whenever you open a month note — so carry-over, linking and indexes just happen.
 
@@ -240,7 +289,7 @@ There's no build step. `main.js` is what Obsidian loads.
 node check.js
 ```
 
-50 assertions covering the `0.N` sort order, promotion, demotion arrival day, checkbox-state preservation, multiple tasks per line, autolinking guards, index generation, both entity kinds and idempotence. No test framework.
+100 assertions covering the `0.N` sort order, promotion, demotion arrival day, checkbox-state preservation, multiple tasks per line, autolinking guards, index generation, both entity kinds, time rounding, GitHub entry mapping and idempotence. No test framework.
 
 ### Known limitation
 
