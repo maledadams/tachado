@@ -65,13 +65,16 @@ const keyOf = (s) =>
    .trim()
    .slice(0, 60);
 
-const STAMP = /\[completed\s+(\d{1,2}\/\d{1,2}\/\d{4})\]/i;
+// Either closing marker, with the date it carries. The kind is kept alongside
+// the date so that changing a tick to a drop re-dates it rather than inheriting
+// the day it was completed.
+const STAMP = /\[(completed|dropped)\s+(\d{1,2}\/\d{1,2}\/\d{4})\]/i;
 
 // A row's own text, with the state markers this plugin appends stripped off.
 const stripTail = (s) =>
   s.replace(/~~/g, '')
    .replace(/\s*\[completed[^\]]*\]/ig, '')
-   .replace(/\s*\[DROPPED\]/ig, '')
+   .replace(/\s*\[dropped[^\]]*\]/ig, '')
    .trim();
 
 const ddmmyyyy = (d) =>
@@ -103,7 +106,8 @@ function parse(text) {
       const body = stripTail(box[2]);
       states.set(keyOf(body), {
         state: box[1] === '-' ? 'dropped' : (box[1] === ' ' ? 'open' : 'done'),
-        stamp: was ? was[1] : null,
+        stamp: was ? was[2] : null,
+        stampKind: was ? was[1].toLowerCase() : null,
       });
       return;
     }
@@ -136,7 +140,8 @@ function resolve({ mentions, states }) {
     .sort((a, b) => a.seq - b.seq)             // document order == chronological
     .map((t) => {
       const s = states.get(t.key);
-      return { ...t, state: s ? s.state : 'open', stamp: s ? s.stamp : null };
+      return { ...t, state: s ? s.state : 'open',
+               stamp: s ? s.stamp : null, stampKind: s ? s.stampKind : null };
     });
 }
 
@@ -618,8 +623,11 @@ What it is, and why it shows up in the log.
 const renderLine = (t, today) => {
   const box  = t.state === 'done' ? 'x' : t.state === 'dropped' ? '-' : ' ';
   const body = t.state === 'open' ? t.text : `~~${t.text}~~`;
-  const flag = t.state === 'dropped' ? ' [DROPPED]'
-             : t.state === 'done' ? ` [completed ${t.stamp || ddmmyyyy(today)}]`
+  // reuse the date already on the row only if it was written for this state
+  const kind = t.state === 'done' ? 'completed' : t.state === 'dropped' ? 'dropped' : null;
+  const when = t.stampKind === kind && t.stamp ? t.stamp : ddmmyyyy(today);
+  const flag = kind === 'completed' ? ` [completed ${when}]`
+             : kind === 'dropped'   ? ` [DROPPED ${when}]`
              : '';
   return `- [${box}] ${t.num} — ${body}${flag}`;
 };

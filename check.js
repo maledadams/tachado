@@ -99,7 +99,7 @@ doc = `# WEEK 3 OF SEPTEMBER
 `;
 out = rebuild(doc);
 ok('done is struck',        has(out, '- [x] 1.D — ~~finished one~~'));
-ok('dropped is flagged',    has(out, '- [-] 2.D — ~~abandoned one~~ [DROPPED]'));
+ok('dropped is flagged',    /- \[-\] 2\.D — ~~abandoned one~~ \[DROPPED \d{2}\/\d{2}\/\d{4}\]/.test(out));
 
 /* 6. a completed daily does NOT carry to the next day */
 doc = `# WEEK 3 OF SEPTEMBER
@@ -778,8 +778,54 @@ ok('counts still work',          countStates(o).done === 1 && countStates(o).ope
 
 // dropped keeps its own marker, unstamped
 o = on(2026, 8, 17, '\n- [-] 1.D — call the bank');
-ok('dropped is flagged',      o.includes('[DROPPED]'));
-ok('dropped is not stamped',  !o.includes('[completed'));
+ok('dropped is flagged',      o.includes('[DROPPED 17/09/2026]'));
+ok('dropped is not "completed"', !o.includes('[completed'));
+}
+
+/* ---- dropping records its date too ---- */
+{
+const doc = (report) => `# SEPTEMBER 2026
+
+# WEEK 3 OF SEPTEMBER
+
+## Mon, September, 14:
+9:00 a.m. : 1.D read the blueprint
+
+### Daily TO-DO Report
+${report}
+`;
+const on = (d, report) => rebuild(doc(report), [], { year: '2026', month: 8, today: new Date(2026, 8, d) });
+
+let o = on(17, '\n- [-] 1.D — read the blueprint');
+ok('drop is dated',            o.includes('[DROPPED 17/09/2026]'));
+ok('marker stays uppercase',   !o.includes('[dropped 17'));
+ok('after the strikethrough',  o.includes('~~read the blueprint~~ [DROPPED 17/09/2026]'));
+
+// written once, then read back
+o = on(25, '\n- [-] 1.D — ~~read the blueprint~~ [DROPPED 17/09/2026]');
+ok('drop date is kept',        o.includes('[DROPPED 17/09/2026]'));
+ok('not moved to today',       !o.includes('[DROPPED 25/09/2026]'));
+ok('drop stamping is idempotent',
+   rebuild(o, [], { year: '2026', month: 8, today: new Date(2026, 8, 28) }) === o);
+
+// a tick changed to a drop is re-dated, not given the completion day
+o = on(20, '\n- [x] 1.D — ~~read the blueprint~~ [completed 14/09/2026]'
+          .replace('- [x]', '- [-]'));
+ok('changing state re-dates it', o.includes('[DROPPED 20/09/2026]'));
+ok('the old date is gone',       !o.includes('14/09/2026'));
+
+// and the other way round
+o = on(20, '\n- [x] 1.D — ~~read the blueprint~~ [DROPPED 14/09/2026]');
+ok('drop -> done re-dates too',  o.includes('[completed 20/09/2026]'));
+
+// an old undated [DROPPED] picks up a date on the next rebuild
+o = on(21, '\n- [-] 1.D — ~~read the blueprint~~ [DROPPED]');
+ok('legacy marker gets dated',   o.includes('[DROPPED 21/09/2026]'));
+ok('and only once',              (o.match(/\[DROPPED/g) || []).length === 1);
+
+ok('stripTail removes a dated drop',
+   stripTail('~~a thing~~ [DROPPED 17/09/2026]') === 'a thing');
+ok('counts unaffected', countStates(on(17, '\n- [-] 1.D — read the blueprint')).dropped === 1);
 }
 
 console.log(`all ${n} checks passed`);

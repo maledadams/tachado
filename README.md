@@ -9,7 +9,7 @@
 [![Obsidian](https://img.shields.io/badge/Obsidian-plugin-7C3AED?logo=obsidian&logoColor=white)](https://obsidian.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-1B7F4C.svg)](LICENSE)
 [![No build step](https://img.shields.io/badge/build-none%20required-0A7EA4)](#development)
-[![Tests](https://img.shields.io/badge/self--check-249%20passing-1B7F4C)](check.js)
+[![Tests](https://img.shields.io/badge/self--check-262%20passing-1B7F4C)](check.js)
 
 </div>
 
@@ -58,7 +58,7 @@ That's what's on disk. Greppable, diffable, portable, yours. The red-italic rend
 | ⬆️ **Promotion & demotion** | Rewrite the suffix to move a task between timeframes. Up = plain number, down = carry namespace |
 | ✅ **Generated reports** | Daily, weekly and monthly TO-DO sections are rebuilt from your log, never typed by hand |
 | ~~🚫~~ **Strikethrough & DROPPED** | Native Obsidian checkboxes. `- [x]` strikes it, `- [-]` marks it `[DROPPED]` |
-| 📆 **Completion dates** | Ticking a box records the day you did it — `[completed 17/09/2026]` — written once and never recomputed |
+| 📆 **Closing dates** | Ticking or dropping records the day you did it — `[completed 17/09/2026]`, `[DROPPED 17/09/2026]` — written once and never recomputed |
 | 🔗 **Automatic linking** | Mention a tool or project that exists and it becomes a real wikilink — backlinks and graph included |
 | ⌨️ **`@` picker** | Type `@` for a dropdown of every tool and project, or keep typing to create a new one on the spot |
 | 🐙 **GitHub import** | Commits, PRs, merges and reviews pulled in automatically as timestamped log lines, scoped to the orgs you allow |
@@ -380,7 +380,7 @@ There's no build step. `main.js` is what Obsidian loads.
 node check.js
 ```
 
-249 assertions covering the `0.N` sort order, promotion, demotion arrival day, checkbox-state preservation, multiple tasks per line, autolinking guards, index generation, bare markers, completion stamps, both entity kinds, time rounding, GitHub entry mapping, month skeletons, generated-line handling, the calendar grid, future-day suppression and idempotence. No test framework.
+262 assertions covering the `0.N` sort order, promotion, demotion arrival day, checkbox-state preservation, multiple tasks per line, autolinking guards, index generation, bare markers, completion stamps, both entity kinds, time rounding, GitHub entry mapping, month skeletons, generated-line handling, the calendar grid, future-day suppression and idempotence. No test framework.
 
 ### Known limitation
 
