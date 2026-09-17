@@ -116,7 +116,9 @@ function parse(text) {
     if (t) time = t[1].replace(/\s+/g, ' ').toLowerCase().replace('a. m.', 'a.m.').replace('p. m.', 'p.m.');
 
     for (const t of tokensOf(line)) {
-      const after = line.slice(t.textFrom, t.textTo).trim();
+      // a separator typed after the marker ("1.D : do the thing") is not part
+      // of the task
+      const after = line.slice(t.textFrom, t.textTo).trim().replace(/^[:\u2014-]\s*/, '');
       if (!after) continue;                   // a bare token is a stub, skip it
       mentions.push({ seq: mentions.length, line: i, week, day, time,
                       scope: t.scope, text: after, key: keyOf(after) });
@@ -399,6 +401,38 @@ const firstDayOfWeek = (year, monthIdx, week) => {
 
 const isFuture = (year, monthIdx, day, now = new Date()) =>
   new Date(year, monthIdx, day) > new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+// Every unticked report row in a note, with the report it sits in. Enough to
+// show a list of what could be dropped, and to find the line again afterwards.
+function openRows(lines) {
+  const out = [];
+  let week = 0, day = 0, kind = null;
+
+  lines.forEach((line, at) => {
+    let m;
+    if ((m = line.match(H_WEEK))) { week = +m[1]; kind = null; return; }
+    if (H_DAILY.test(line))   { kind = 'D'; return; }
+    if (H_WEEKLY.test(line))  { kind = 'W'; return; }
+    if (H_MONTHLY.test(line)) { kind = 'M'; return; }
+    if (!/TO-?DO/i.test(line) && (m = line.match(H_DAY))) { day = +m[2]; kind = null; return; }
+    if (/^#{1,6}\s/.test(line)) { kind = null; return; }
+    if (!kind) return;
+
+    m = line.match(/^(\s*-\s*)\[ \](\s*)((?:0\.)?\d+\.[DWM])\s*[—-]?\s*(.*)$/);
+    if (m) out.push({ at, kind, week, day, num: m[3], text: stripTail(m[4]) });
+  });
+
+  return out;
+}
+
+// Move a row's box to done or dropped. The date is written by the rebuild that
+// follows, exactly as when you click the checkbox yourself.
+function closeRow(lines, at, mark) {
+  const line = lines[at];
+  if (!/^\s*-\s*\[ \]/.test(line)) return false;
+  lines[at] = line.replace(/^(\s*-\s*)\[ \]/, `$1[${mark}]`);
+  return true;
+}
 
 /* ---------- a blank month ------------------------------------------------ */
 
@@ -909,6 +943,33 @@ class TachadoSettings extends PluginSettingTab {
   }
 }
 
+// The month grid both modals use. `state` carries year/month/day/now; `marked`
+// is the set of days worth a dot.
+function drawCalendar(box, state, { marked = new Set(), onPick, onShift }) {
+  const head = box.createDiv({ cls: 'tl-cal-head' });
+  head.createEl('button', { text: '‹', cls: 'tl-cal-nav' }).onclick = () => onShift(-1);
+  head.createDiv({ cls: 'tl-cal-title', text: `${titleCase(MONTHS[state.month])} ${state.year}` });
+  const next = head.createEl('button', { text: '›', cls: 'tl-cal-nav' });
+  next.onclick = () => onShift(1);
+  if (isFuture(state.year, state.month + 1, 1, state.now)) next.addClass('is-disabled');
+
+  const grid = box.createDiv({ cls: 'tl-cal' });
+  for (const d of DOW) grid.createDiv({ cls: 'tl-cal-dow', text: d });
+
+  for (const row of calendarGrid(state.year, state.month)) {
+    for (const d of row) {
+      if (d === null) { grid.createDiv({ cls: 'tl-cal-day is-empty' }); continue; }
+      const cell = grid.createDiv({ cls: 'tl-cal-day', text: String(d) });
+      if (isFuture(state.year, state.month, d, state.now)) { cell.addClass('is-future'); continue; }
+      if (d === state.day) cell.addClass('is-selected');
+      if (state.year === state.now.getFullYear() && state.month === state.now.getMonth()
+          && d === state.now.getDate()) cell.addClass('is-today');
+      if (marked.has(d)) cell.addClass('has-tasks');
+      cell.onclick = () => onPick(d);
+    }
+  }
+}
+
 /* ---------- log to any day ------------------------------------------------ */
 
 // A month grid you click a day in, then a time and what happened. Future days
@@ -950,28 +1011,10 @@ class EntryModal extends Modal {
     const { contentEl: box } = this;
     box.empty();
 
-    const head = box.createDiv({ cls: 'tl-cal-head' });
-    head.createEl('button', { text: '‹', cls: 'tl-cal-nav' })
-        .onclick = () => this.shift(-1);
-    head.createDiv({ cls: 'tl-cal-title', text: `${titleCase(MONTHS[this.month])} ${this.year}` });
-    const next = head.createEl('button', { text: '›', cls: 'tl-cal-nav' });
-    next.onclick = () => this.shift(1);
-    if (isFuture(this.year, this.month + 1, 1, this.now)) next.addClass('is-disabled');
-
-    const grid = box.createDiv({ cls: 'tl-cal' });
-    for (const d of DOW) grid.createDiv({ cls: 'tl-cal-dow', text: d });
-
-    for (const row of calendarGrid(this.year, this.month)) {
-      for (const d of row) {
-        if (d === null) { grid.createDiv({ cls: 'tl-cal-day is-empty' }); continue; }
-        const cell = grid.createDiv({ cls: 'tl-cal-day', text: String(d) });
-        if (isFuture(this.year, this.month, d, this.now)) { cell.addClass('is-future'); continue; }
-        if (d === this.day) cell.addClass('is-selected');
-        if (this.year === this.now.getFullYear() && this.month === this.now.getMonth()
-            && d === this.now.getDate()) cell.addClass('is-today');
-        cell.onclick = () => { this.day = d; this.draw(); this.text?.focus(); };
-      }
-    }
+    drawCalendar(box, this, {
+      onShift: (by) => this.shift(by),
+      onPick: (d) => { this.day = d; this.draw(); this.text?.focus(); },
+    });
 
     const row = box.createDiv({ cls: 'tl-entry-row' });
     this.time = row.createEl('input', { cls: 'tl-entry-time', type: 'text' });
@@ -1003,6 +1046,86 @@ class EntryModal extends Modal {
       await this.plugin.addEntry(this.year, this.month, this.day, `${at} : ${what}`);
       this.close();
     } catch (e) { this.hint.setText(e.message); }
+  }
+}
+
+/* ---------- close a task -------------------------------------------------- */
+
+const CLOSE = {
+  done:    { mark: 'x', verb: 'Complete', title: 'Complete a task', past: 'completed' },
+  dropped: { mark: '-', verb: 'Drop',     title: 'Drop a task',     past: 'dropped' },
+};
+
+// Pick a day, then pick one of the tasks open on it. The daily report's own
+// rows are listed, plus that week's and the month's, so anything open can be
+// closed from here.
+class CloseModal extends Modal {
+  constructor(plugin, mode, file) {
+    super(plugin.app);
+    this.plugin = plugin;
+    this.mode = CLOSE[mode];
+    this.file = file;
+    this.now = new Date();
+    const start = plugin.monthDate(file);
+    this.year = start.getFullYear();
+    this.month = start.getMonth();
+    this.day = (this.year === this.now.getFullYear() && this.month === this.now.getMonth())
+      ? this.now.getDate() : new Date(this.year, this.month + 1, 0).getDate();
+  }
+
+  async onOpen() {
+    this.modalEl.addClass('tl-entry-modal');
+    this.titleEl.setText(this.mode.title);
+    this.lines = (await this.app.vault.cachedRead(this.file)).split('\n');
+    this.rows = openRows(this.lines);
+    this.draw();
+  }
+
+  shift(by) {
+    const d = new Date(this.year, this.month + by, 1);
+    if (isFuture(d.getFullYear(), d.getMonth(), 1, this.now)) return;
+    new CloseModal(this.plugin, this.mode.mark === 'x' ? 'done' : 'dropped', this.file).open();
+    this.close();
+  }
+
+  // everything closeable from the selected day: its own tasks, its week's, the month's
+  forDay() {
+    const week = weekOfMonth(this.year, this.month, this.day);
+    return this.rows.filter((r) =>
+      (r.kind === 'D' && r.day === this.day) ||
+      (r.kind === 'W' && r.week === week) ||
+      r.kind === 'M');
+  }
+
+  draw() {
+    const { contentEl: box } = this;
+    box.empty();
+
+    drawCalendar(box, this, {
+      marked: new Set(this.rows.filter((r) => r.kind === 'D').map((r) => r.day)),
+      onShift: (by) => this.shift(by),
+      onPick: (d) => { this.day = d; this.draw(); },
+    });
+
+    const list = box.createDiv({ cls: 'tl-task-list' });
+    const found = this.forDay();
+    if (!found.length) {
+      list.createDiv({ cls: 'tl-task-empty', text: 'Nothing open on this day.' });
+      return;
+    }
+    for (const row of found) {
+      const el = list.createDiv({ cls: 'tl-task' });
+      el.createSpan({ cls: `tl-task-num tl-${row.num.slice(-1)}`, text: row.num });
+      el.createSpan({ cls: 'tl-task-text', text: row.text });
+      el.onclick = () => this.pick(row);
+    }
+  }
+
+  async pick(row) {
+    const ok = await this.plugin.closeTask(this.file, row, this.mode.mark);
+    if (ok) new Notice(`Tachado: ${row.num} ${this.mode.past}`);
+    else new Notice('Tachado: that row moved — reopen the command');
+    this.close();
   }
 }
 
@@ -1086,6 +1209,17 @@ module.exports = class Tachado extends Plugin {
 
     this.addCommand({ id: 'rebuild', name: 'Rebuild TO-DO reports and index', callback: () => this.run(null, true) });
     this.addCommand({ id: 'year-index', name: 'Rebuild year index', callback: () => this.buildYear(null, true) });
+    for (const [mode, spec] of Object.entries(CLOSE))
+      this.addCommand({
+        id: `close-${mode}`,
+        name: `${spec.verb} a task`,
+        callback: () => {
+          const f = this.app.workspace.getActiveFile();
+          if (!this.isMonth(f)) { new Notice('Open a month note first'); return; }
+          new CloseModal(this, mode, f).open();
+        },
+      });
+
     this.addCommand({
       id: 'add-entry',
       name: 'Add a log entry',
@@ -1300,6 +1434,24 @@ module.exports = class Tachado extends Plugin {
     return month < 0 ? new Date() : new Date(year, month, 1);
   }
 
+  // Flip one report row's checkbox. The row is matched on its text rather than
+  // its line number, so an edit between opening the modal and choosing does not
+  // close the wrong task.
+  async closeTask(file, row, mark) {
+    let hit = false;
+    await this.app.vault.process(file, (data) => {
+      const lines = data.split('\n');
+      const again = openRows(lines).find((r) =>
+        r.kind === row.kind && r.day === row.day && r.week === row.week &&
+        keyOf(r.text) === keyOf(row.text));
+      if (!again) return data;
+      hit = closeRow(lines, again.at, mark);
+      return hit ? lines.join('\n') : data;
+    });
+    if (hit) await this.run(file);
+    return hit;
+  }
+
   // Write one timestamped line into a day, creating the month note and the
   // day's headings if they aren't there yet.
   async addEntry(year, month, day, line) {
@@ -1397,4 +1549,4 @@ module.exports.__test = { parse, resolve, bucket, rebuild, keyOf, autolink,
   roundTime, normalizeTimes, protect, unlink, GEN_LINE, ddmmyyyy, stripTail, parseGhUrl, commitEntry, prEntry,
   reviewEntry, prToEntries, commitsToEntries, reviewsToEntries, tidy,
   insertEntry, minutesOf, monthSkeleton, fillNumbers, tokensOf, monthChoices, weekOfMonth, headingKey,
-  ensureDay, insertByKey, parseTimeInput, nowRounded, calendarGrid, isFuture, firstDayOfWeek };
+  ensureDay, insertByKey, openRows, closeRow, parseTimeInput, nowRounded, calendarGrid, isFuture, firstDayOfWeek };

@@ -9,7 +9,7 @@
 [![Obsidian](https://img.shields.io/badge/Obsidian-plugin-7C3AED?logo=obsidian&logoColor=white)](https://obsidian.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-1B7F4C.svg)](LICENSE)
 [![No build step](https://img.shields.io/badge/build-none%20required-0A7EA4)](#development)
-[![Tests](https://img.shields.io/badge/self--check-262%20passing-1B7F4C)](check.js)
+[![Tests](https://img.shields.io/badge/self--check-281%20passing-1B7F4C)](check.js)
 
 </div>
 
@@ -175,6 +175,23 @@ Future days are greyed out and unclickable, and you can't page past the current 
 The time box is forgiving: `3:45 p.m.`, `3:45pm`, `3pm` and `15:47` all work, and whatever you type is rounded to the nearest five minutes on the way in. Type a task token and it behaves like any other task.
 
 If the day you pick has no heading yet, Tachado writes one — along with its week banner and that week's report — in the right place. If the whole month note doesn't exist, it gets scaffolded first.
+
+## Closing a task without hunting for it
+
+**Complete a task** and **Drop a task** open the same grid. Days carrying open work are marked; click one and you get everything closeable from there — that day's tasks, that week's, and the month's, each with its number. Click a task and it's closed and dated.
+
+```
+ ‹      September 2026      ›
+ Mo Tu We Th Fr Sa Su
+  ...
+ 14 15 16 17 ...              ← days with open tasks are marked
+
+ 0.1.D   so I need a branch specific bd until remargin…
+ 0.2.D   "Dile que aquí el objetivo es reescribir…"
+ 1.W     nueva misión semanal: REVENTAR la barrita…
+```
+
+It flips the same checkbox you would click by hand, so the date lands exactly as it would otherwise. The row is matched on its text rather than its position, so editing the note while the picker is open can't close the wrong task.
 
 ### Why not the Calendar plugin?
 
@@ -351,6 +368,8 @@ Both regenerate whenever you open a month note. The month index lives inside an 
 |---|---|
 | **Rebuild TO-DO reports and index** | Reparses the note, relinks tools, regenerates every report and the index |
 | **Rebuild year index** | Recounts every month in the current year folder |
+| **Complete a task** | Calendar picker, then the list of what's open — click one to tick it |
+| **Drop a task** | The same, but marks it `[DROPPED]` |
 | **Add a log entry** | Calendar picker; writes a timestamped line into any past day |
 | **New month note** | Pick a month and year; creates it fully scaffolded, or opens it |
 | **New tool or project note** | Drops an `@` at the cursor to open the picker |
@@ -380,7 +399,7 @@ There's no build step. `main.js` is what Obsidian loads.
 node check.js
 ```
 
-262 assertions covering the `0.N` sort order, promotion, demotion arrival day, checkbox-state preservation, multiple tasks per line, autolinking guards, index generation, bare markers, completion stamps, both entity kinds, time rounding, GitHub entry mapping, month skeletons, generated-line handling, the calendar grid, future-day suppression and idempotence. No test framework.
+281 assertions covering the `0.N` sort order, promotion, demotion arrival day, checkbox-state preservation, multiple tasks per line, autolinking guards, index generation, bare markers, closing stamps, task pickers, both entity kinds, time rounding, GitHub entry mapping, month skeletons, generated-line handling, the calendar grid, future-day suppression and idempotence. No test framework.
 
 ### Known limitation
 

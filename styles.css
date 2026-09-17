@@ -41,3 +41,16 @@
 
 .tl-entry-foot { display: flex; align-items: center; gap: .75rem; margin-top: .75rem; }
 .tl-entry-hint { flex: 1; font-size: .8rem; color: var(--text-error); }
+
+/* ---- the task list in the complete/drop modal ---- */
+.tl-task-list { margin-top: 1rem; max-height: 14rem; overflow-y: auto; }
+.tl-task-empty { color: var(--text-muted); font-size: .9rem; padding: .5rem 0; }
+.tl-task {
+  display: flex; gap: .6rem; align-items: baseline; padding: .4rem .5rem;
+  border-radius: var(--radius-s); cursor: pointer;
+}
+.tl-task:hover { background: var(--background-modifier-hover); }
+.tl-task-num { font-style: italic; font-weight: 700; flex: none; font-variant-numeric: tabular-nums; }
+.tl-task-text {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}

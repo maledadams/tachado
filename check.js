@@ -13,7 +13,7 @@ const { rebuild, autolink, yearIndexNote, countStates, ENTITY_TEMPLATE, KINDS,
         roundTime, normalizeTimes, unlink, GEN_LINE, ddmmyyyy, stripTail, parseGhUrl, commitEntry, prEntry, reviewEntry,
         prToEntries, commitsToEntries, reviewsToEntries, tidy, insertEntry, minutesOf,
         fillNumbers, tokensOf,
-        monthSkeleton, monthChoices, weekOfMonth, ensureDay, parseTimeInput,
+        monthSkeleton, monthChoices, weekOfMonth, ensureDay, openRows, closeRow, parseTimeInput,
         nowRounded, calendarGrid, isFuture, firstDayOfWeek } = T;
 let n = 0;
 const ok = (name, cond) => { n++; if (!cond) { console.error('FAIL:', name); process.exit(1); } };
@@ -826,6 +826,86 @@ ok('and only once',              (o.match(/\[DROPPED/g) || []).length === 1);
 ok('stripTail removes a dated drop',
    stripTail('~~a thing~~ [DROPPED 17/09/2026]') === 'a thing');
 ok('counts unaffected', countStates(on(17, '\n- [-] 1.D — read the blueprint')).dropped === 1);
+}
+
+/* ---- picking a task to close ---- */
+{
+const note = `# SEPTEMBER 2026
+
+# WEEK 3 OF SEPTEMBER
+
+## Mon, September, 14:
+9:00 a.m. : 1.D call the bank
+9:30 a.m. : 2.D already done
+
+### Daily TO-DO Report
+
+- [ ] 1.D — call the bank
+- [x] 2.D — ~~already done~~ [completed 14/09/2026]
+
+## Tue, September, 15:
+9:00 a.m. : 1.D fresh today
+10:00 a.m. : 1.W burn the quota
+11:00 a.m. : 1.M rewrite the runbook
+
+### Daily TO-DO Report
+
+- [ ] 0.1.D — call the bank
+- [ ] 1.D — fresh today
+
+## END OF WEEK 3 TO-DO REPORT
+
+- [ ] 1.W — burn the quota
+
+# END OF SEPTEMBER TO-DO REPORT
+
+- [ ] 1.M — rewrite the runbook
+`;
+const rows = openRows(note.split('\n'));
+
+ok('only open rows',          rows.length === 5);
+ok('ticked rows skipped',     !rows.some((r) => r.text.includes('already done')));
+ok('daily rows carry a day',  rows.find((r) => r.text === 'fresh today').day === 15);
+ok('carried rows too',        rows.find((r) => r.num === '0.1.D').day === 15);
+ok('weekly carries a week',   rows.find((r) => r.kind === 'W').week === 3);
+ok('monthly is month-scoped', rows.find((r) => r.kind === 'M').text === 'rewrite the runbook');
+ok('numbers preserved',       rows.some((r) => r.num === '0.1.D'));
+ok('a typed separator is not part of the task',
+   rebuild('# SEPTEMBER 2026\n\n# WEEK 3 OF SEPTEMBER\n\n## Mon, September, 14:\n' +
+           '9:00 a.m. : 1.D : "Investigate linear"\n\n### Daily TO-DO Report\n', [],
+           { year: '2026', month: 8, today: new Date(2026, 8, 14) })
+     .includes('1.D — "Investigate linear"'));
+ok('markers stripped from text',
+   openRows(['### Daily TO-DO Report', '- [ ] 1.D — a thing [DROPPED 01/01/2026]'])[0].text === 'a thing');
+ok('headings end a report block',
+   openRows(['### Daily TO-DO Report', '## Tue, September, 15:', '- [ ] 1.D — loose']).length === 0);
+
+// closing flips only the box; the date comes from the rebuild that follows
+let L = note.split('\n');
+let target = openRows(L).find((r) => r.text === 'fresh today');
+ok('close succeeds',      closeRow(L, target.at, '-') === true);
+ok('box is now dropped',  L[target.at].startsWith('- [-] 1.D'));
+ok('text untouched',      L[target.at].includes('fresh today'));
+ok('no date written yet', !L[target.at].includes('/2026'));
+ok('an already-closed row is refused',
+   closeRow(note.split('\n'), note.split('\n').findIndex((l) => l.startsWith('- [x]')), '-') === false);
+
+let out = rebuild(L.join('\n'), [], { year: '2026', month: 8, today: new Date(2026, 8, 18) });
+ok('rebuild stamps the drop', out.includes('~~fresh today~~ [DROPPED 18/09/2026]'));
+
+L = note.split('\n');
+target = openRows(L).find((r) => r.text === 'fresh today');
+closeRow(L, target.at, 'x');
+out = rebuild(L.join('\n'), [], { year: '2026', month: 8, today: new Date(2026, 8, 18) });
+ok('rebuild stamps a completion', out.includes('~~fresh today~~ [completed 18/09/2026]'));
+ok('other tasks untouched',       out.includes('0.1.D — call the bank'));
+
+// closing a weekly works the same way
+L = note.split('\n');
+target = openRows(L).find((r) => r.kind === 'W');
+closeRow(L, target.at, '-');
+out = rebuild(L.join('\n'), [], { year: '2026', month: 8, today: new Date(2026, 8, 18) });
+ok('weekly can be dropped', out.includes('~~burn the quota~~ [DROPPED 18/09/2026]'));
 }
 
 console.log(`all ${n} checks passed`);
