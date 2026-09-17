@@ -10,7 +10,7 @@ Module._load = function (req, ...rest) {
 };
 const T = require('./main.js').__test;
 const { rebuild, autolink, yearIndexNote, countStates, ENTITY_TEMPLATE, KINDS,
-        roundTime, normalizeTimes, unlink, GEN_LINE, parseGhUrl, commitEntry, prEntry, reviewEntry,
+        roundTime, normalizeTimes, unlink, GEN_LINE, ddmmyyyy, stripTail, parseGhUrl, commitEntry, prEntry, reviewEntry,
         prToEntries, commitsToEntries, reviewsToEntries, tidy, insertEntry, minutesOf,
         fillNumbers, tokensOf,
         monthSkeleton, monthChoices, weekOfMonth, ensureDay, parseTimeInput,
@@ -724,6 +724,62 @@ ok('filling is idempotent',  rebuild(out, [], meta) === out);
 const hits = tokensOf('9:00 a.m. : W : burn the quota');
 ok('bare marker decorated', hits.length === 1 && hits[0].scope === 'W' && hits[0].bare === true);
 ok('its text is the rest',  'W : burn the quota'.slice(0) && hits[0].textTo === '9:00 a.m. : W : burn the quota'.length);
+}
+
+/* ---- a completed task records the day you ticked it ---- */
+{
+const doc = (report) => `# SEPTEMBER 2026
+
+# WEEK 3 OF SEPTEMBER
+
+## Mon, September, 14:
+9:00 a.m. : 1.D call the bank
+10:00 a.m. : 2.D still open
+
+### Daily TO-DO Report
+${report}
+`;
+const on = (y, m, d, report) =>
+  rebuild(doc(report), [], { year: '2026', month: 8, today: new Date(y, m, d) });
+
+ok('date format is day/month/year', ddmmyyyy(new Date(2026, 8, 7)) === '07/09/2026');
+ok('zero padded',                   ddmmyyyy(new Date(2026, 11, 31)) === '31/12/2026');
+
+// ticked today -> stamped with today
+let o = on(2026, 8, 17, '\n- [x] 1.D — call the bank');
+ok('completion is stamped',   o.includes('[completed 17/09/2026]'));
+ok('stamp sits after the strikethrough', o.includes('~~call the bank~~ [completed 17/09/2026]'));
+ok('open tasks are not stamped', !/- \[ \].*completed/.test(o));
+
+// the stamp is written once and never recomputed
+const stamped = '\n- [x] 1.D — ~~call the bank~~ [completed 16/09/2026]';
+o = on(2026, 8, 20, stamped);
+ok('an existing date is kept',  o.includes('[completed 16/09/2026]'));
+ok('and not moved to today',    !o.includes('[completed 20/09/2026]'));
+ok('only one stamp',            (o.match(/\[completed/g) || []).length === 1);
+ok('stamping is idempotent',
+   rebuild(o, [], { year: '2026', month: 8, today: new Date(2026, 8, 25) }) === o);
+
+// unticking clears it; re-ticking stamps afresh
+o = on(2026, 8, 20, '\n- [ ] 1.D — call the bank [completed 16/09/2026]');
+ok('reopening drops the stamp', !o.includes('[completed'));
+
+// the marker never leaks into a task's identity
+ok('stripTail removes the stamp',
+   stripTail('~~call the bank~~ [completed 16/09/2026]') === 'call the bank');
+ok('stripTail removes DROPPED',
+   stripTail('~~a thing~~ [DROPPED]') === 'a thing');
+ok('stripTail leaves plain text', stripTail('call the bank') === 'call the bank');
+
+o = on(2026, 8, 17, stamped);
+ok('the task is still matched',  o.includes('1.D — ~~call the bank~~'));
+ok('and not duplicated',         (o.match(/call the bank/g) || []).length === 2);  // body + report
+ok('counts still work',          countStates(o).done === 1 && countStates(o).open === 1);
+
+// dropped keeps its own marker, unstamped
+o = on(2026, 8, 17, '\n- [-] 1.D — call the bank');
+ok('dropped is flagged',      o.includes('[DROPPED]'));
+ok('dropped is not stamped',  !o.includes('[completed'));
 }
 
 console.log(`all ${n} checks passed`);

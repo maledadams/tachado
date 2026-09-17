@@ -65,6 +65,18 @@ const keyOf = (s) =>
    .trim()
    .slice(0, 60);
 
+const STAMP = /\[completed\s+(\d{1,2}\/\d{1,2}\/\d{4})\]/i;
+
+// A row's own text, with the state markers this plugin appends stripped off.
+const stripTail = (s) =>
+  s.replace(/~~/g, '')
+   .replace(/\s*\[completed[^\]]*\]/ig, '')
+   .replace(/\s*\[DROPPED\]/ig, '')
+   .trim();
+
+const ddmmyyyy = (d) =>
+  `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+
 /* ---------- parse ------------------------------------------------------- */
 
 function parse(text) {
@@ -86,8 +98,13 @@ function parse(text) {
     // a generated report line: harvest its checkbox state, don't treat as a mention
     const box = line.match(/^\s*-\s*\[([ xX\-])\]\s*(?:(?:0\.)?\d+\.[DWM])\s*[—-]?\s*(.*)$/);
     if (box) {
-      const body = box[2].replace(/~~/g, '').replace(/\s*\[DROPPED\]\s*$/i, '').trim();
-      states.set(keyOf(body), box[1] === '-' ? 'dropped' : (box[1] === ' ' ? 'open' : 'done'));
+      // the date was written the day the box was ticked; never recompute it
+      const was = box[2].match(STAMP);
+      const body = stripTail(box[2]);
+      states.set(keyOf(body), {
+        state: box[1] === '-' ? 'dropped' : (box[1] === ' ' ? 'open' : 'done'),
+        stamp: was ? was[1] : null,
+      });
       return;
     }
 
@@ -117,7 +134,10 @@ function resolve({ mentions, states }) {
   }
   return [...byKey.values()]
     .sort((a, b) => a.seq - b.seq)             // document order == chronological
-    .map((t) => ({ ...t, state: states.get(t.key) || 'open' }));
+    .map((t) => {
+      const s = states.get(t.key);
+      return { ...t, state: s ? s.state : 'open', stamp: s ? s.stamp : null };
+    });
 }
 
 // Fill in the numbers for bare markers. Numbering runs per scope and per
@@ -595,10 +615,12 @@ What it is, and why it shows up in the log.
 
 /* ---------- render ------------------------------------------------------ */
 
-const renderLine = (t) => {
+const renderLine = (t, today) => {
   const box  = t.state === 'done' ? 'x' : t.state === 'dropped' ? '-' : ' ';
   const body = t.state === 'open' ? t.text : `~~${t.text}~~`;
-  const flag = t.state === 'dropped' ? ' [DROPPED]' : '';
+  const flag = t.state === 'dropped' ? ' [DROPPED]'
+             : t.state === 'done' ? ` [completed ${t.stamp || ddmmyyyy(today)}]`
+             : '';
   return `- [${box}] ${t.num} — ${body}${flag}`;
 };
 
@@ -700,7 +722,7 @@ function rebuild(text, tools = [], meta = {}) {
     while (end < out.length && !(/^#{1,6}\s/.test(out[end]) && out[end].match(/^#+/)[0].length <= level)) end++;
 
     const periodId = r.kind === 'D' ? r.day : r.kind === 'W' ? r.week : 0;
-    const rows = bucket(tasks, r.kind, periodId, home).map(renderLine);
+    const rows = bucket(tasks, r.kind, periodId, home).map((t) => renderLine(t, now));
     out.splice(r.at + 1, end - r.at - 1, '', ...(rows.length ? rows : ['*nothing*']), '');
   }
 
@@ -731,7 +753,7 @@ const countStates = (text) => {
   for (const l of text.split('\n')) {
     const m = l.match(/^\s*-\s*\[([ xX-])\]\s*(?:0\.)?\d+\.[DWM]\s*[\u2014-]?\s*(.*)$/);
     if (!m) continue;
-    const key = keyOf(m[2].replace(/~~/g, '').replace(/\s*\[DROPPED\]\s*$/i, ''));
+    const key = keyOf(stripTail(m[2]));
     if (!key || seen.has(key)) continue;
     seen.add(key);
     c[m[1] === '-' ? 'dropped' : m[1] === ' ' ? 'open' : 'done']++;
@@ -1364,7 +1386,7 @@ module.exports = class Tachado extends Plugin {
 
 module.exports.__test = { parse, resolve, bucket, rebuild, keyOf, autolink,
   monthIndexBlock, yearIndexNote, countStates, MONTHS, ENTITY_TEMPLATE, KINDS,
-  roundTime, normalizeTimes, protect, unlink, GEN_LINE, parseGhUrl, commitEntry, prEntry,
+  roundTime, normalizeTimes, protect, unlink, GEN_LINE, ddmmyyyy, stripTail, parseGhUrl, commitEntry, prEntry,
   reviewEntry, prToEntries, commitsToEntries, reviewsToEntries, tidy,
   insertEntry, minutesOf, monthSkeleton, fillNumbers, tokensOf, monthChoices, weekOfMonth, headingKey,
   ensureDay, insertByKey, parseTimeInput, nowRounded, calendarGrid, isFuture, firstDayOfWeek };
