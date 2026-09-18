@@ -9,7 +9,7 @@
 [![Obsidian](https://img.shields.io/badge/Obsidian-plugin-7C3AED?logo=obsidian&logoColor=white)](https://obsidian.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-1B7F4C.svg)](LICENSE)
 [![No build step](https://img.shields.io/badge/build-none%20required-0A7EA4)](#development)
-[![Tests](https://img.shields.io/badge/self--check-281%20passing-1B7F4C)](check.js)
+[![Tests](https://img.shields.io/badge/self--check-305%20passing-1B7F4C)](check.js)
 
 </div>
 
@@ -175,6 +175,14 @@ Future days are greyed out and unclickable, and you can't page past the current 
 The time box is forgiving: `3:45 p.m.`, `3:45pm`, `3pm` and `15:47` all work, and whatever you type is rounded to the nearest five minutes on the way in. Type a task token and it behaves like any other task.
 
 If the day you pick has no heading yet, Tachado writes one — along with its week banner and that week's report — in the right place. If the whole month note doesn't exist, it gets scaffolded first.
+
+## Putting a misplaced entry right
+
+**Move a log entry to another day** takes two passes over the same grid: pick the day you think it's on and click the entry, then pick the day it belongs on. Days holding entries are marked, so a line that landed somewhere odd is easy to spot.
+
+The entry keeps its time and is re-filed in time order on the destination day. If that day has no heading yet, one is written — along with its week banner, if that is missing too.
+
+---
 
 ## Closing a task without hunting for it
 
@@ -370,6 +378,7 @@ Both regenerate whenever you open a month note. The month index lives inside an 
 | **Rebuild year index** | Recounts every month in the current year folder |
 | **Complete a task** | Calendar picker, then the list of what's open — click one to tick it |
 | **Drop a task** | The same, but marks it `[DROPPED]` |
+| **Move a log entry to another day** | Pick the entry, pick the day it belongs on |
 | **Add a log entry** | Calendar picker; writes a timestamped line into any past day |
 | **New month note** | Pick a month and year; creates it fully scaffolded, or opens it |
 | **New tool or project note** | Drops an `@` at the cursor to open the picker |
@@ -399,7 +408,7 @@ There's no build step. `main.js` is what Obsidian loads.
 node check.js
 ```
 
-281 assertions covering the `0.N` sort order, promotion, demotion arrival day, checkbox-state preservation, multiple tasks per line, autolinking guards, index generation, bare markers, closing stamps, task pickers, both entity kinds, time rounding, GitHub entry mapping, month skeletons, generated-line handling, the calendar grid, future-day suppression and idempotence. No test framework.
+305 assertions covering the `0.N` sort order, promotion, demotion arrival day, checkbox-state preservation, multiple tasks per line, autolinking guards, index generation, bare markers, closing stamps, task pickers, both entity kinds, time rounding, GitHub entry mapping, month skeletons, generated-line handling, the calendar grid, future-day suppression and idempotence. No test framework.
 
 ### Known limitation
 

@@ -13,8 +13,8 @@ const { rebuild, autolink, yearIndexNote, countStates, ENTITY_TEMPLATE, KINDS,
         roundTime, normalizeTimes, unlink, GEN_LINE, ddmmyyyy, stripTail, parseGhUrl, commitEntry, prEntry, reviewEntry,
         prToEntries, commitsToEntries, reviewsToEntries, tidy, insertEntry, minutesOf,
         fillNumbers, tokensOf,
-        monthSkeleton, monthChoices, weekOfMonth, ensureDay, openRows, closeRow, parseTimeInput,
-        nowRounded, calendarGrid, isFuture, firstDayOfWeek } = T;
+        monthSkeleton, monthChoices, weekOfMonth, ensureDay, openRows, closeRow, logRows, moveRow, parseTimeInput,
+        nowRounded, calendarGrid, isFuture, firstDayOfWeek, defaultDay } = T;
 let n = 0;
 const ok = (name, cond) => { n++; if (!cond) { console.error('FAIL:', name); process.exit(1); } };
 const has = (out, s) => out.includes(s);
@@ -906,6 +906,85 @@ target = openRows(L).find((r) => r.kind === 'W');
 closeRow(L, target.at, '-');
 out = rebuild(L.join('\n'), [], { year: '2026', month: 8, today: new Date(2026, 8, 18) });
 ok('weekly can be dropped', out.includes('~~burn the quota~~ [DROPPED 18/09/2026]'));
+}
+
+/* ---- a picker opens on today, never on the 1st ---- */
+{
+const now = new Date(2026, 8, 18);
+ok('current month opens on today', defaultDay(2026, 8, now) === 18);
+ok('never the 1st',                defaultDay(2026, 8, now) !== 1);
+ok('a past month opens on its last day', defaultDay(2026, 7, now) === 31);
+ok('february is handled',          defaultDay(2026, 1, now) === 28);
+ok('a leap february too',          defaultDay(2028, 1, new Date(2028, 5, 1)) === 29);
+ok('a past year opens at month end', defaultDay(2025, 8, now) === 30);
+}
+
+/* ---- moving a misplaced log entry ---- */
+{
+const note = `# SEPTEMBER 2026
+
+# WEEK 1 OF SEPTEMBER
+
+## Tue, September, 1:
+
+12:05 p.m. : had the idea about remargin
+
+### Daily TO-DO Report
+
+*nothing*
+
+# WEEK 3 OF SEPTEMBER
+
+## Fri, September, 18:
+
+10:20 a.m. : Got to work
+12:00 p.m. : Talked with dylan
+
+### Daily TO-DO Report
+
+- [ ] 1.D — something open
+`;
+const rows = logRows(note.split('\n'));
+ok('finds log lines',        rows.length === 3);
+ok('report rows excluded',   !rows.some((r) => r.text.includes('something open')));
+ok('headings excluded',      !rows.some((r) => r.text.startsWith('#')));
+ok('day is tracked',         rows.find((r) => r.text.startsWith('12:05')).day === 1);
+ok('minutes are parsed',     rows.find((r) => r.text.startsWith('10:20')).mins === 620);
+ok('*nothing* is not a log line', !rows.some((r) => r.text.includes('nothing')));
+
+// move it to the 18th, in time order between 10:20 and 12:00? no — after 12:00
+let L = note.split('\n');
+const row = logRows(L).find((r) => r.text.startsWith('12:05'));
+ok('move succeeds', moveRow(L, row.at, 2026, 8, 18) === true);
+
+const after = L.join('\n');
+const sept18 = after.split('## Fri, September, 18:')[1].split(/\n## /)[0];
+const sept1 = after.split('## Tue, September, 1:')[1].split(/\n# /)[0];
+ok('gone from the 1st',    !sept1.includes('12:05'));
+ok('landed on the 18th',   sept18.includes('12:05 p.m. : had the idea about remargin'));
+ok('in time order',        sept18.indexOf('12:00') < sept18.indexOf('12:05'));
+ok('after 10:20 too',      sept18.indexOf('10:20') < sept18.indexOf('12:05'));
+ok('no double blank left', !/\n\n\n/.test(after));
+
+// moving to a day that does not exist yet creates it
+L = note.split('\n');
+moveRow(L, logRows(L).find((r) => r.text.startsWith('12:05')).at, 2026, 8, 9);
+ok('creates the target day',  L.includes('## Wed, September, 9:'));
+ok('creates its week banner', L.includes('# WEEK 2 OF SEPTEMBER'));
+
+// a non-log line is refused
+L = note.split('\n');
+ok('refuses a heading', moveRow(L, L.indexOf('## Tue, September, 1:'), 2026, 8, 18) === false);
+ok('refuses a report row',
+   moveRow(L, L.findIndex((l) => l.startsWith('- [ ]')), 2026, 8, 18) === false);
+
+// and the note still rebuilds cleanly afterwards
+L = note.split('\n');
+moveRow(L, logRows(L).find((r) => r.text.startsWith('12:05')).at, 2026, 8, 18);
+const out = rebuild(L.join('\n'), [], { year: '2026', month: 8, today: new Date(2026, 8, 18) });
+ok('rebuilds after a move', out.includes('12:05 p.m. : had the idea about remargin'));
+ok('still idempotent',
+   rebuild(out, [], { year: '2026', month: 8, today: new Date(2026, 8, 18) }) === out);
 }
 
 console.log(`all ${n} checks passed`);

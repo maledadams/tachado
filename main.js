@@ -399,6 +399,14 @@ const firstDayOfWeek = (year, monthIdx, week) => {
   return 1;
 };
 
+// Which day a picker should open on for a given month: today when that month
+// is the current one, otherwise its last day. Never the 1st, which is what a
+// month's own date carries and is almost never what you meant.
+const defaultDay = (year, monthIdx, now = new Date()) =>
+  (year === now.getFullYear() && monthIdx === now.getMonth())
+    ? now.getDate()
+    : new Date(year, monthIdx + 1, 0).getDate();
+
 const isFuture = (year, monthIdx, day, now = new Date()) =>
   new Date(year, monthIdx, day) > new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
@@ -423,6 +431,38 @@ function openRows(lines) {
   });
 
   return out;
+}
+
+// Every timestamped line you wrote, with the day it currently sits under.
+// Report rows and headings are not log lines and are never returned.
+function logRows(lines) {
+  const out = [];
+  let week = 0, day = 0, inReport = false;
+
+  lines.forEach((line, at) => {
+    let m;
+    if ((m = line.match(H_WEEK))) { week = +m[1]; inReport = false; return; }
+    if (H_DAILY.test(line) || H_WEEKLY.test(line) || H_MONTHLY.test(line)) { inReport = true; return; }
+    if (!/TO-?DO/i.test(line) && (m = line.match(H_DAY))) { day = +m[2]; inReport = false; return; }
+    if (/^#{1,6}\s/.test(line)) { inReport = false; return; }
+    if (inReport || !day) return;
+
+    const t = minutesOf(line);
+    if (t !== null) out.push({ at, day, week, mins: t, text: line });
+  });
+
+  return out;
+}
+
+// Move one log line to another day, keeping it in time order there.
+function moveRow(lines, at, year, monthIdx, toDay) {
+  const line = lines[at];
+  if (minutesOf(line) === null) return false;
+  lines.splice(at, 1);
+  // the line had a blank on each side; leave one, not two
+  while (at > 0 && lines[at] === '' && lines[at - 1] === '') lines.splice(at, 1);
+  insertEntry(lines, ensureDay(lines, year, monthIdx, toDay), line);
+  return true;
 }
 
 // Move a row's box to done or dropped. The date is written by the rebuild that
@@ -981,13 +1021,11 @@ class EntryModal extends Modal {
     this.now = new Date();
     this.year = start.getFullYear();
     this.month = start.getMonth();
-    this.day = isFuture(this.year, this.month, start.getDate(), this.now)
-      ? this.now.getDate() : start.getDate();
     if (isFuture(this.year, this.month, 1, this.now)) {
       this.year = this.now.getFullYear();
       this.month = this.now.getMonth();
-      this.day = this.now.getDate();
     }
+    this.day = defaultDay(this.year, this.month, this.now);
   }
 
   onOpen() {
@@ -1069,8 +1107,7 @@ class CloseModal extends Modal {
     const start = plugin.monthDate(file);
     this.year = start.getFullYear();
     this.month = start.getMonth();
-    this.day = (this.year === this.now.getFullYear() && this.month === this.now.getMonth())
-      ? this.now.getDate() : new Date(this.year, this.month + 1, 0).getDate();
+    this.day = defaultDay(this.year, this.month, this.now);
   }
 
   async onOpen() {
@@ -1128,6 +1165,90 @@ class CloseModal extends Modal {
     this.close();
   }
 }
+
+/* ---------- move a log entry ---------------------------------------------- */
+
+// Two passes over the same grid: pick the entry, then pick where it belongs.
+class MoveModal extends Modal {
+  constructor(plugin, file) {
+    super(plugin.app);
+    this.plugin = plugin;
+    this.file = file;
+    this.now = new Date();
+    const start = plugin.monthDate(file);
+    this.year = start.getFullYear();
+    this.month = start.getMonth();
+    this.day = defaultDay(this.year, this.month, this.now);
+    this.stage = 'pick';
+  }
+
+  async onOpen() {
+    this.modalEl.addClass('tl-entry-modal');
+    this.lines = (await this.app.vault.cachedRead(this.file)).split('\n');
+    this.rows = logRows(this.lines);
+    this.draw();
+  }
+
+  shift(by) {
+    const d = new Date(this.year, this.month + by, 1);
+    if (isFuture(d.getFullYear(), d.getMonth(), 1, this.now)) return;
+    this.year = d.getFullYear();
+    this.month = d.getMonth();
+    this.day = defaultDay(this.year, this.month, this.now);
+    this.rows = logRows(this.lines);       // days are per-month; re-read for the new one
+    this.draw();
+  }
+
+  draw() {
+    const { contentEl: box } = this;
+    box.empty();
+    this.titleEl.setText(this.stage === 'pick' ? 'Move a log entry' : 'Move it to which day?');
+
+    if (this.stage === 'place') {
+      box.createDiv({ cls: 'tl-move-chosen', text: this.chosen.text });
+    }
+
+    drawCalendar(box, this, {
+      marked: new Set(this.rows.map((r) => r.day)),
+      onShift: (by) => this.shift(by),
+      onPick: (d) => {
+        if (this.stage === 'place') return this.place(d);
+        this.day = d;
+        this.draw();
+      },
+    });
+
+    if (this.stage === 'place') {
+      box.createDiv({ cls: 'tl-task-empty', text: 'Pick the day it should be on.' });
+      return;
+    }
+
+    const list = box.createDiv({ cls: 'tl-task-list' });
+    const found = this.rows.filter((r) => r.day === this.day);
+    if (!found.length) {
+      list.createDiv({ cls: 'tl-task-empty', text: 'No entries on this day.' });
+      return;
+    }
+    for (const row of found) {
+      const el = list.createDiv({ cls: 'tl-task' });
+      const cut = row.text.indexOf(':', row.text.indexOf(':') + 1);
+      el.createSpan({ cls: 'tl-task-num', text: row.text.slice(0, cut > 0 ? cut : 10).trim() });
+      el.createSpan({ cls: 'tl-task-text', text: row.text.slice(cut + 1).trim() });
+      el.onclick = () => { this.chosen = row; this.stage = 'place'; this.draw(); };
+    }
+  }
+
+  async place(toDay) {
+    if (toDay === this.chosen.day) { this.close(); return; }
+    const ok = await this.plugin.moveEntry(this.file, this.chosen, this.year, this.month, toDay);
+    new Notice(ok ? `Tachado: moved to the ${toDay}${ordinal(toDay)}`
+                  : 'Tachado: that line moved — reopen the command');
+    this.close();
+  }
+}
+
+const ordinal = (n) =>
+  (n % 100 >= 11 && n % 100 <= 13) ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' })[n % 10] || 'th';
 
 /* ---------- month picker -------------------------------------------------- */
 
@@ -1219,6 +1340,16 @@ module.exports = class Tachado extends Plugin {
           new CloseModal(this, mode, f).open();
         },
       });
+
+    this.addCommand({
+      id: 'move-entry',
+      name: 'Move a log entry to another day',
+      callback: () => {
+        const f = this.app.workspace.getActiveFile();
+        if (!this.isMonth(f)) { new Notice('Open a month note first'); return; }
+        new MoveModal(this, f).open();
+      },
+    });
 
     this.addCommand({
       id: 'add-entry',
@@ -1434,6 +1565,21 @@ module.exports = class Tachado extends Plugin {
     return month < 0 ? new Date() : new Date(year, month, 1);
   }
 
+  // Relocate a log line. Matched on its text rather than its line number, so
+  // an edit made while the picker was open cannot move the wrong line.
+  async moveEntry(file, row, year, month, toDay) {
+    let hit = false;
+    await this.app.vault.process(file, (data) => {
+      const lines = data.split('\n');
+      const again = logRows(lines).find((r) => r.day === row.day && r.text === row.text);
+      if (!again) return data;
+      hit = moveRow(lines, again.at, year, month, toDay);
+      return hit ? lines.join('\n') : data;
+    });
+    if (hit) await this.run(file);
+    return hit;
+  }
+
   // Flip one report row's checkbox. The row is matched on its text rather than
   // its line number, so an edit between opening the modal and choosing does not
   // close the wrong task.
@@ -1549,4 +1695,4 @@ module.exports.__test = { parse, resolve, bucket, rebuild, keyOf, autolink,
   roundTime, normalizeTimes, protect, unlink, GEN_LINE, ddmmyyyy, stripTail, parseGhUrl, commitEntry, prEntry,
   reviewEntry, prToEntries, commitsToEntries, reviewsToEntries, tidy,
   insertEntry, minutesOf, monthSkeleton, fillNumbers, tokensOf, monthChoices, weekOfMonth, headingKey,
-  ensureDay, insertByKey, openRows, closeRow, parseTimeInput, nowRounded, calendarGrid, isFuture, firstDayOfWeek };
+  ensureDay, insertByKey, openRows, closeRow, logRows, moveRow, parseTimeInput, nowRounded, calendarGrid, isFuture, firstDayOfWeek, defaultDay };

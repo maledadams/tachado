@@ -54,3 +54,13 @@
 .tl-task-text {
   flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+
+/* ---- the chosen entry, while picking its new day ---- */
+.tl-move-chosen {
+  padding: .5rem .6rem; margin-bottom: .75rem;
+  border-left: 2px solid var(--interactive-accent);
+  background: var(--background-secondary);
+  border-radius: var(--radius-s);
+  font-size: .9rem; color: var(--text-muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
