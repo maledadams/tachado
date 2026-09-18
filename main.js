@@ -1,5 +1,5 @@
 'use strict';
-const { Plugin, Notice, EditorSuggest, PluginSettingTab, Setting, SuggestModal, Modal } = require('obsidian');
+const { Plugin, Notice, EditorSuggest, PluginSettingTab, Setting, SuggestModal, Modal, MarkdownView } = require('obsidian');
 const { ViewPlugin, Decoration } = require('@codemirror/view');
 const { RangeSetBuilder } = require('@codemirror/state');
 
@@ -412,7 +412,10 @@ const isFuture = (year, monthIdx, day, now = new Date()) =>
 
 // Every unticked report row in a note, with the report it sits in. Enough to
 // show a list of what could be dropped, and to find the line again afterwards.
-function openRows(lines) {
+function openRows(lines) { return reportRows(lines, true); }
+function closedRows(lines) { return reportRows(lines, false); }
+
+function reportRows(lines, wantOpen) {
   const out = [];
   let week = 0, day = 0, kind = null;
 
@@ -426,8 +429,9 @@ function openRows(lines) {
     if (/^#{1,6}\s/.test(line)) { kind = null; return; }
     if (!kind) return;
 
-    m = line.match(/^(\s*-\s*)\[ \](\s*)((?:0\.)?\d+\.[DWM])\s*[—-]?\s*(.*)$/);
-    if (m) out.push({ at, kind, week, day, num: m[3], text: stripTail(m[4]) });
+    m = line.match(/^(\s*-\s*)\[([ xX-])\](\s*)((?:0\.)?\d+\.[DWM])\s*[—-]?\s*(.*)$/);
+    if (m && (m[2] === ' ') === wantOpen)
+      out.push({ at, kind, week, day, num: m[4], text: stripTail(m[5]), box: m[2] });
   });
 
   return out;
@@ -462,6 +466,15 @@ function moveRow(lines, at, year, monthIdx, toDay) {
   // the line had a blank on each side; leave one, not two
   while (at > 0 && lines[at] === '' && lines[at - 1] === '') lines.splice(at, 1);
   insertEntry(lines, ensureDay(lines, year, monthIdx, toDay), line);
+  return true;
+}
+
+// Put a closed row back to open. The date goes with it: it described a state
+// the task is no longer in.
+function reopenRow(lines, at) {
+  const line = lines[at];
+  if (!/^\s*-\s*\[[xX-]\]/.test(line)) return false;
+  lines[at] = line.replace(/^(\s*-\s*)\[[xX-]\]/, '$1[ ]');
   return true;
 }
 
@@ -1092,7 +1105,14 @@ class EntryModal extends Modal {
 const CLOSE = {
   done:    { mark: 'x', verb: 'Complete', title: 'Complete a task', past: 'completed' },
   dropped: { mark: '-', verb: 'Drop',     title: 'Drop a task',     past: 'dropped' },
+  open:    { mark: ' ', verb: 'Reopen',   title: 'Reopen a task',   past: 'reopened', closed: true },
 };
+
+const SCOPES = [
+  { key: 'D', label: 'Daily' },
+  { key: 'W', label: 'Weekly' },
+  { key: 'M', label: 'Monthly' },
+];
 
 // Pick a day, then pick one of the tasks open on it. The daily report's own
 // rows are listed, plus that week's and the month's, so anything open can be
@@ -1114,7 +1134,7 @@ class CloseModal extends Modal {
     this.modalEl.addClass('tl-entry-modal');
     this.titleEl.setText(this.mode.title);
     this.lines = (await this.app.vault.cachedRead(this.file)).split('\n');
-    this.rows = openRows(this.lines);
+    this.rows = this.mode.closed ? closedRows(this.lines) : openRows(this.lines);
     this.draw();
   }
 
@@ -1147,7 +1167,8 @@ class CloseModal extends Modal {
     const list = box.createDiv({ cls: 'tl-task-list' });
     const found = this.forDay();
     if (!found.length) {
-      list.createDiv({ cls: 'tl-task-empty', text: 'Nothing open on this day.' });
+      list.createDiv({ cls: 'tl-task-empty',
+        text: this.mode.closed ? 'Nothing closed on this day.' : 'Nothing open on this day.' });
       return;
     }
     for (const row of found) {
@@ -1159,10 +1180,34 @@ class CloseModal extends Modal {
   }
 
   async pick(row) {
+    if (this.mode.promote) return this.promote(row);
     const ok = await this.plugin.closeTask(this.file, row, this.mode.mark);
     if (ok) new Notice(`Tachado: ${row.num} ${this.mode.past}`);
     else new Notice('Tachado: that row moved — reopen the command');
     this.close();
+  }
+
+  // Promotion is declared the way the format declares it: the line is written
+  // again, now, with the new scope. The original stays as the record of when
+  // it was first raised.
+  promote(row) {
+    const { contentEl: box } = this;
+    box.empty();
+    this.titleEl.setText('Move it to which timeframe?');
+    box.createDiv({ cls: 'tl-move-chosen', text: `${row.num}  ${row.text}` });
+
+    const list = box.createDiv({ cls: 'tl-task-list' });
+    for (const scope of SCOPES) {
+      if (scope.key === row.num.slice(-1)) continue;
+      const el = list.createDiv({ cls: 'tl-task' });
+      el.createSpan({ cls: `tl-task-num tl-${scope.key}`, text: scope.key });
+      el.createSpan({ cls: 'tl-task-text', text: scope.label });
+      el.onclick = async () => {
+        await this.plugin.rescope(this.file, row, scope.key);
+        new Notice(`Tachado: now ${scope.label.toLowerCase()}`);
+        this.close();
+      };
+    }
   }
 }
 
@@ -1340,6 +1385,30 @@ module.exports = class Tachado extends Plugin {
           new CloseModal(this, mode, f).open();
         },
       });
+
+    this.addCommand({
+      id: 'rescope',
+      name: 'Promote or demote a task',
+      callback: () => {
+        const f = this.app.workspace.getActiveFile();
+        if (!this.isMonth(f)) { new Notice('Open a month note first'); return; }
+        const modal = new CloseModal(this, 'done', f);
+        modal.mode = { ...CLOSE.done, promote: true, title: 'Which task?' };
+        modal.open();
+      },
+    });
+
+    this.addCommand({
+      id: 'export-docx',
+      name: 'Export this month to .docx',
+      callback: () => this.exportDocx(),
+    });
+
+    this.addCommand({
+      id: 'goto-today',
+      name: 'Go to today',
+      callback: () => this.gotoToday(),
+    });
 
     this.addCommand({
       id: 'move-entry',
@@ -1565,6 +1634,62 @@ module.exports = class Tachado extends Plugin {
     return month < 0 ? new Date() : new Date(year, month, 1);
   }
 
+  // Write the line again, now, with a different scope. fillNumbers gives it
+  // its number on the rebuild that follows.
+  async rescope(file, row, scope) {
+    const today = new Date();
+    const line = `${nowRounded(today)} : ${scope} : ${row.text}`;
+    await this.app.vault.process(file, (data) => {
+      const lines = data.split('\n');
+      insertEntry(lines, ensureDay(lines, today.getFullYear(), today.getMonth(), today.getDate()), line);
+      return lines.join('\n');
+    });
+    await this.run(file);
+  }
+
+  async exportDocx() {
+    const f = this.app.workspace.getActiveFile();
+    if (!this.isMonth(f)) { new Notice('Open a month note first'); return; }
+
+    const root = this.app.vault.adapter.getBasePath?.();
+    if (!root) { new Notice('Export needs the desktop app'); return; }
+    const script = `${root}/${this.manifest.dir}/tachado2docx.py`;
+    const note = `${root}/${f.path}`;
+
+    new Notice('Tachado: exporting\u2026');
+    try {
+      const out = await new Promise((resolve, reject) => {
+        require('child_process').execFile('python3', [script, note],
+          { env: { ...process.env, PATH: `${process.env.PATH || ''}:/usr/bin:/opt/homebrew/bin` } },
+          (err, stdout, stderr) => err ? reject(new Error((stderr || err.message).trim())) : resolve(stdout.trim()));
+      });
+      new Notice(`Tachado: wrote ${out.split('/').pop()}`, 6000);
+    } catch (e) { new Notice(`Tachado: ${e.message}`, 8000); }
+  }
+
+  gotoToday() {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const f = this.app.workspace.getActiveFile();
+    if (!view || !this.isMonth(f)) { new Notice('Open a month note first'); return; }
+
+    const now = new Date();
+    if (MONTHS.indexOf(f.basename.toUpperCase().split(' ')[0]) !== now.getMonth()
+        || +f.path.match(YEAR_DIR)[1] !== now.getFullYear()) {
+      new Notice('This note is not the current month');
+      return;
+    }
+
+    const lines = view.editor.getValue().split('\n');
+    const at = lines.findIndex((l) => {
+      const m = !/TO-?DO/i.test(l) && l.match(H_DAY);
+      return m && +m[2] === now.getDate();
+    });
+    if (at < 0) { new Notice('No heading for today yet'); return; }
+
+    view.editor.setCursor({ line: at, ch: 0 });
+    view.editor.scrollIntoView({ from: { line: at, ch: 0 }, to: { line: at + 12, ch: 0 } }, true);
+  }
+
   // Relocate a log line. Matched on its text rather than its line number, so
   // an edit made while the picker was open cannot move the wrong line.
   async moveEntry(file, row, year, month, toDay) {
@@ -1695,4 +1820,4 @@ module.exports.__test = { parse, resolve, bucket, rebuild, keyOf, autolink,
   roundTime, normalizeTimes, protect, unlink, GEN_LINE, ddmmyyyy, stripTail, parseGhUrl, commitEntry, prEntry,
   reviewEntry, prToEntries, commitsToEntries, reviewsToEntries, tidy,
   insertEntry, minutesOf, monthSkeleton, fillNumbers, tokensOf, monthChoices, weekOfMonth, headingKey,
-  ensureDay, insertByKey, openRows, closeRow, logRows, moveRow, parseTimeInput, nowRounded, calendarGrid, isFuture, firstDayOfWeek, defaultDay };
+  ensureDay, insertByKey, openRows, closedRows, closeRow, reopenRow, logRows, moveRow, parseTimeInput, nowRounded, calendarGrid, isFuture, firstDayOfWeek, defaultDay };

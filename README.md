@@ -9,7 +9,7 @@
 [![Obsidian](https://img.shields.io/badge/Obsidian-plugin-7C3AED?logo=obsidian&logoColor=white)](https://obsidian.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-1B7F4C.svg)](LICENSE)
 [![No build step](https://img.shields.io/badge/build-none%20required-0A7EA4)](#development)
-[![Tests](https://img.shields.io/badge/self--check-305%20passing-1B7F4C)](check.js)
+[![Tests](https://img.shields.io/badge/self--check-314%20passing-1B7F4C)](check.js)
 
 </div>
 
@@ -86,6 +86,14 @@ Then in Obsidian: **Settings → Community plugins →** turn off Restricted mod
 ---
 
 ## The syntax
+
+### Changing a task's timeframe
+
+**Promote or demote a task** writes the line again, now, with the new scope — which is exactly how the format declares a change:
+
+> *original: 3:15 p.m. … 5.D "task" → modified: 9:00 p.m. … 2.W "task"*
+
+The original line stays as the record of when it was first raised. The new number is filled in for you.
 
 ### Just write the letter
 
@@ -376,6 +384,10 @@ Both regenerate whenever you open a month note. The month index lives inside an 
 |---|---|
 | **Rebuild TO-DO reports and index** | Reparses the note, relinks tools, regenerates every report and the index |
 | **Rebuild year index** | Recounts every month in the current year folder |
+| **Promote or demote a task** | Pick a task, pick Daily / Weekly / Monthly |
+| **Reopen a task** | Put a completed or dropped task back |
+| **Export this month to .docx** | Word file with the colors re-applied |
+| **Go to today** | Jump the cursor to today's heading |
 | **Complete a task** | Calendar picker, then the list of what's open — click one to tick it |
 | **Drop a task** | The same, but marks it `[DROPPED]` |
 | **Move a log entry to another day** | Pick the entry, pick the day it belongs on |
@@ -408,11 +420,29 @@ There's no build step. `main.js` is what Obsidian loads.
 node check.js
 ```
 
-305 assertions covering the `0.N` sort order, promotion, demotion arrival day, checkbox-state preservation, multiple tasks per line, autolinking guards, index generation, bare markers, closing stamps, task pickers, both entity kinds, time rounding, GitHub entry mapping, month skeletons, generated-line handling, the calendar grid, future-day suppression and idempotence. No test framework.
+314 assertions covering the `0.N` sort order, promotion, demotion arrival day, checkbox-state preservation, multiple tasks per line, autolinking guards, index generation, bare markers, closing stamps, task pickers, both entity kinds, time rounding, GitHub entry mapping, month skeletons, generated-line handling, the calendar grid, future-day suppression and idempotence. No test framework.
 
 ### Known limitation
 
 **A task's identity is its text.** Reword a task substantially and Tachado treats it as new, resetting its checkbox. This is a deliberate trade: it keeps hidden IDs out of your markdown. The upgrade path (Obsidian block references) is noted in `main.js`.
+
+---
+
+## Exporting to Word
+
+**Export this month to .docx** writes a Word file beside the note, with everything the markdown deliberately leaves out put back:
+
+- Week banners as Title at Arial 26, days as Heading 1 at Arial 20, reports as Heading 2 and 3
+- Task markers and their text italic and colored — red, orange, blue by scope
+- Completed and dropped rows struck through, with their closing date
+- Checkboxes as ☐ ☑ ☒, links live, wikilinks flattened to their label
+- The generated index block omitted
+
+No pandoc and no `python-docx` — `scripts/tachado2docx.py` writes the file with the standard library, the same way `docx2tachado.py` reads one. Pandoc could not do this job anyway: markdown has no way to say "this span is red italic", which is the whole reason the colors live in the plugin.
+
+```bash
+python3 scripts/tachado2docx.py "2026/SEPTEMBER 2026.md"
+```
 
 ---
 
@@ -433,7 +463,6 @@ Standard library only: no pandoc, no `python-docx`.
 
 ## Roadmap
 
-- [ ] `.docx` export via Pandoc with a reference template — Arial 26 titles, Arial 20 day headings, exact task colors
 - [ ] Settings tab for colors, folder names and heading levels
 - [ ] More entity kinds (people, clients) — currently one line of code, no UI
 - [ ] Community plugin directory submission

@@ -3,7 +3,7 @@
 const Module = require('module');
 const real = Module._load;
 Module._load = function (req, ...rest) {
-  if (req === 'obsidian') return { Plugin: class {}, Notice: class {}, EditorSuggest: class {}, PluginSettingTab: class {}, Setting: class {}, SuggestModal: class {}, Modal: class {} };
+  if (req === 'obsidian') return { Plugin: class {}, Notice: class {}, EditorSuggest: class {}, PluginSettingTab: class {}, Setting: class {}, SuggestModal: class {}, Modal: class {}, MarkdownView: class {} };
   if (req === '@codemirror/view') return { ViewPlugin: { fromClass: () => ({}) }, Decoration: { mark: () => ({}) } };
   if (req === '@codemirror/state') return { RangeSetBuilder: class {} };
   return real(req, ...rest);
@@ -13,7 +13,7 @@ const { rebuild, autolink, yearIndexNote, countStates, ENTITY_TEMPLATE, KINDS,
         roundTime, normalizeTimes, unlink, GEN_LINE, ddmmyyyy, stripTail, parseGhUrl, commitEntry, prEntry, reviewEntry,
         prToEntries, commitsToEntries, reviewsToEntries, tidy, insertEntry, minutesOf,
         fillNumbers, tokensOf,
-        monthSkeleton, monthChoices, weekOfMonth, ensureDay, openRows, closeRow, logRows, moveRow, parseTimeInput,
+        monthSkeleton, monthChoices, weekOfMonth, ensureDay, openRows, closedRows, closeRow, reopenRow, logRows, moveRow, parseTimeInput,
         nowRounded, calendarGrid, isFuture, firstDayOfWeek, defaultDay } = T;
 let n = 0;
 const ok = (name, cond) => { n++; if (!cond) { console.error('FAIL:', name); process.exit(1); } };
@@ -985,6 +985,44 @@ const out = rebuild(L.join('\n'), [], { year: '2026', month: 8, today: new Date(
 ok('rebuilds after a move', out.includes('12:05 p.m. : had the idea about remargin'));
 ok('still idempotent',
    rebuild(out, [], { year: '2026', month: 8, today: new Date(2026, 8, 18) }) === out);
+}
+
+/* ---- reopening, and telling open rows from closed ---- */
+{
+const note = `# SEPTEMBER 2026
+
+# WEEK 3 OF SEPTEMBER
+
+## Mon, September, 14:
+9:00 a.m. : 1.D call the bank
+9:30 a.m. : 2.D finished one
+10:00 a.m. : 3.D dropped one
+
+### Daily TO-DO Report
+
+- [ ] 1.D — call the bank
+- [x] 2.D — ~~finished one~~ [completed 14/09/2026]
+- [-] 3.D — ~~dropped one~~ [DROPPED 14/09/2026]
+`;
+const L = () => note.split('\n');
+
+ok('open rows are open',     openRows(L()).length === 1);
+ok('closed rows are closed', closedRows(L()).length === 2);
+ok('closed keeps its box',   closedRows(L()).map((r) => r.box).sort().join() === '-,x');
+ok('stamps stripped from closed text',
+   closedRows(L()).find((r) => r.box === 'x').text === 'finished one');
+
+let lines = L();
+const done = closedRows(lines).find((r) => r.box === 'x');
+ok('reopen succeeds',   reopenRow(lines, done.at) === true);
+ok('box is open again', lines[done.at].startsWith('- [ ] 2.D'));
+ok('an open row is refused',
+   reopenRow(L(), openRows(L())[0].at) === false);
+
+// and the date goes when the state does
+const out = rebuild(lines.join('\n'), [], { year: '2026', month: 8, today: new Date(2026, 8, 20) });
+ok('reopened task loses its date', !/finished one[^\n]*completed/.test(out));
+ok('the other closed task keeps its', out.includes('~~dropped one~~ [DROPPED 14/09/2026]'));
 }
 
 console.log(`all ${n} checks passed`);
