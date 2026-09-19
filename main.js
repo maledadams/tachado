@@ -12,6 +12,19 @@ const { RangeSetBuilder } = require('@codemirror/state');
 // a bare marker is given one on the next rebuild.
 const TOK = /(?:^|[\s(\[])((0\.)?(\d+)\.([DWM]))(?![\w.])/;
 const TOK_G = /(?:^|[\s(\[])((?:(?:0\.)?\d+\.([DWM])(?![\w.]))|(?:([DWMdwm])[ \t]*:(?=[ \t]|$)))/g;
+// A recurring series: R.D.1, R.W.2, R.M.1 — scope then series number. The
+// number identifies the series and is stable for its whole life; it is not a
+// position the way a plain marker's number is.
+//
+// Termination is a parenthesised suffix right after the marker:
+//   R.D.1 take the medication              — forever
+//   R.D.1 (x30) take the medication        — thirty occurrences
+//   R.D.1 (until 31/12/2026) …             — up to and including that date
+const SERIES = /(?:^|[\s(\[])(R\.([DWM])\.(\d+))(?![\w.])/;
+const SERIES_G = new RegExp(SERIES.source, 'g');
+const SERIES_BARE_G = /(^|[\s(\[])R\.([DWMdwm])[ \t]*:(?=[ \t]|$)/g;
+const RECUR = /^\s*\((?:x(\d+))?(?:\s*,\s*)?(?:until\s+(\d{1,2}\/\d{1,2}\/\d{4}))?\)\s*/i;
+
 const BARE_G = /(^|[\s(\[])([DWMdwm])[ \t]*:(?=[ \t]|$)/g;
 
 // Every token on a line, with the span of text that belongs to it: from the
@@ -99,12 +112,13 @@ function parse(text) {
     if (/^#{1,6}\s/.test(line)) return;
 
     // a generated report line: harvest its checkbox state, don't treat as a mention
-    const box = line.match(/^\s*-\s*\[([ xX\-])\]\s*(?:(?:0\.)?\d+\.[DWM])\s*[—-]?\s*(.*)$/);
+    const box = line.match(/^\s*-\s*\[([ xX\-])\]\s*(?:(?:0\.)?\d+\.[DWM]|R\.[DWM]\.\d+)\s*[—-]?\s*(.*)$/);
     if (box) {
       // the date was written the day the box was ticked; never recompute it
       const was = box[2].match(STAMP);
       const body = stripTail(box[2]);
-      states.set(keyOf(body), {
+      const rec = line.match(/^\s*-\s*\[[ xX-]\]\s*(R\.[DWM]\.\d+)/);
+      states.set(rec ? seriesKey(rec[1], day || week || 0) : keyOf(body), {
         state: box[1] === '-' ? 'dropped' : (box[1] === ' ' ? 'open' : 'done'),
         stamp: was ? was[2] : null,
         stampKind: was ? was[1].toLowerCase() : null,
@@ -114,6 +128,8 @@ function parse(text) {
 
     const t = line.match(TIME);
     if (t) time = t[1].replace(/\s+/g, ' ').toLowerCase().replace('a. m.', 'a.m.').replace('p. m.', 'p.m.');
+
+    if (SERIES.test(line)) return;      // a series definition, not a one-off task
 
     for (const t of tokensOf(line)) {
       // a separator typed after the marker ("1.D : do the thing") is not part
@@ -191,6 +207,115 @@ function fillNumbers(lines) {
         top[scope].set(key, n);
         return `${lead}${n}.${scope}`;
       })));
+}
+
+// Every recurring series defined in a note, with where it starts and when it
+// stops. The definition line stays in the log forever; occurrences are
+// generated, never written as body lines.
+function parseSeries(lines) {
+  const out = [];
+  let week = 0, day = 0, inReport = false;
+
+  lines.forEach((line, at) => {
+    let m;
+    if ((m = line.match(H_WEEK))) { week = +m[1]; inReport = false; return; }
+    if (H_DAILY.test(line) || H_WEEKLY.test(line) || H_MONTHLY.test(line)) { inReport = true; return; }
+    if (!/TO-?DO/i.test(line) && (m = line.match(H_DAY))) { day = +m[2]; inReport = false; return; }
+    if (/^#{1,6}\s/.test(line)) { inReport = false; return; }
+    if (inReport || /^\s*-\s*\[/.test(line)) return;
+
+    SERIES_G.lastIndex = 0;
+    while ((m = SERIES_G.exec(line))) {
+      const rest = line.slice(SERIES_G.lastIndex);
+      const r = rest.match(RECUR);
+      const text = (r ? rest.slice(r[0].length) : rest).trim().replace(/^[:—-]\s*/, '');
+      if (!text) continue;
+      out.push({
+        at, marker: m[1], scope: m[2], num: +m[3],
+        startDay: day, startWeek: week,
+        count: r && r[1] ? +r[1] : null,
+        until: r && r[2] ? r[2] : null,
+        text,
+      });
+    }
+  });
+
+  return out;
+}
+
+// dd/mm/yyyy -> a comparable date, or null
+function fromDdmmyyyy(s) {
+  const m = String(s || '').match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  return m ? new Date(+m[3], +m[2] - 1, +m[1]) : null;
+}
+
+// Does `series` have an occurrence in this report's period?
+function occurs(series, scope, periodId, year, monthIdx) {
+  if (series.scope !== scope) return false;
+
+  const start = scope === 'D' ? series.startDay : scope === 'W' ? series.startWeek : 0;
+  if (periodId < start) return false;                    // before it began
+
+  const index = periodId - start;                        // 0 for the first occurrence
+  if (series.count !== null && index >= series.count) return false;
+
+  if (series.until) {
+    const stop = fromDdmmyyyy(series.until);
+    if (!stop) return true;
+    // the last day this period covers — a week ends on its last day
+    const day = scope === 'D' ? periodId
+              : scope === 'W' ? lastDayOfWeek(year, monthIdx, periodId)
+              : new Date(year, monthIdx + 1, 0).getDate();
+    if (new Date(year, monthIdx, day) > stop) return false;
+  }
+  return true;
+}
+
+const lastDayOfWeek = (year, monthIdx, week) => {
+  const last = new Date(year, monthIdx + 1, 0).getDate();
+  let out = 1;
+  for (let d = 1; d <= last; d++) if (weekOfMonth(year, monthIdx, d) === week) out = d;
+  return out;
+};
+
+// State for a recurring occurrence is per period: R.D.1 on the 14th is a
+// different tick from R.D.1 on the 15th.
+const seriesKey = (marker, periodId) => `${marker}@${periodId}`;
+
+// Stop a series from a given date forward. Occurrences already closed are
+// history and always survive; only open ones ahead of the cut disappear.
+function truncateSeries(lines, marker, fromDate) {
+  const cut = new Date(fromDate.getFullYear(), fromDate.getMonth(), fromDate.getDate() - 1);
+  const until = ddmmyyyy(cut);
+  let hit = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].includes(marker)) continue;
+    const at = lines[i].indexOf(marker) + marker.length;
+    const rest = lines[i].slice(at);
+    const r = rest.match(RECUR);
+    const body = r ? rest.slice(r[0].length) : rest;
+    const keepCount = r && r[1] ? `x${r[1]}, ` : '';
+    lines[i] = `${lines[i].slice(0, at)} (${keepCount}until ${until})${body.startsWith(' ') ? '' : ' '}${body}`;
+    hit = true;
+  }
+  return hit;
+}
+
+// The next free series number for a scope.
+const nextSeriesNum = (lines, scope) =>
+  parseSeries(lines).filter((x) => x.scope === scope)
+    .reduce((top, x) => Math.max(top, x.num), 0) + 1;
+
+// Turn a one-off task into a series. The marker is rewritten in place — unlike
+// a scope change (which is re-declared later, R7), recurrence is a property of
+// the task rather than something that happened to it at a point in time.
+function makeRecurring(lines, at, scope, num) {
+  const line = lines[at];
+  const re = new RegExp(`(^|[\\s(\\[])((?:0\\.)?\\d+\\.${scope})(?![\\w.])`);
+  if (!re.test(line)) return false;
+  lines[at] = line.replace(re, `$1R.${scope}.${num}`);
+  return true;
 }
 
 /* ---------- the 0.N rule ------------------------------------------------ */
@@ -429,7 +554,7 @@ function reportRows(lines, wantOpen) {
     if (/^#{1,6}\s/.test(line)) { kind = null; return; }
     if (!kind) return;
 
-    m = line.match(/^(\s*-\s*)\[([ xX-])\](\s*)((?:0\.)?\d+\.[DWM])\s*[—-]?\s*(.*)$/);
+    m = line.match(/^(\s*-\s*)\[([ xX-])\](\s*)((?:0\.)?\d+\.[DWM]|R\.[DWM]\.\d+)\s*[—-]?\s*(.*)$/);
     if (m && (m[2] === ' ') === wantOpen)
       out.push({ at, kind, week, day, num: m[4], text: stripTail(m[5]), box: m[2] });
   });
@@ -707,6 +832,19 @@ What it is, and why it shows up in the log.
 
 /* ---------- render ------------------------------------------------------ */
 
+// A recurring occurrence. Its marker is the series id, identical on every
+// period it lands on — that is the point of it.
+const renderSeries = (o, today) => {
+  const box  = o.state === 'done' ? 'x' : o.state === 'dropped' ? '-' : ' ';
+  const body = o.state === 'open' ? o.text : `~~${o.text}~~`;
+  const kind = o.state === 'done' ? 'completed' : o.state === 'dropped' ? 'dropped' : null;
+  const when = o.stampKind === kind && o.stamp ? o.stamp : ddmmyyyy(today);
+  const flag = kind === 'completed' ? ` [completed ${when}]`
+             : kind === 'dropped'   ? ` [DROPPED ${when}]`
+             : '';
+  return `- [${box}] ${o.marker} — ${body}${flag}`;
+};
+
 const renderLine = (t, today) => {
   const box  = t.state === 'done' ? 'x' : t.state === 'dropped' ? '-' : ' ';
   const body = t.state === 'open' ? t.text : `~~${t.text}~~`;
@@ -770,6 +908,7 @@ function rebuild(text, tools = [], meta = {}) {
 
   const doc = parse(lines.join('\n'));
   const tasks = resolve(doc);
+  const series = parseSeries(lines);
   const out = doc.lines.slice();
 
   // Where the clock currently stands inside this note's month. A month that
@@ -810,6 +949,13 @@ function rebuild(text, tools = [], meta = {}) {
       }
     : null;
 
+  const ahead = (r) => {
+    if (!known) return false;
+    if (r.kind === 'D') return isFuture(y, mo, r.day, now);
+    if (r.kind === 'W') return isFuture(y, mo, firstDayOfWeek(y, mo, r.week), now);
+    return false;
+  };
+
   // replace each report block's body, back to front so indices stay valid
   for (const r of [...doc.reports].reverse()) {
     const level = doc.lines[r.at].match(/^#+/)[0].length;
@@ -818,6 +964,25 @@ function rebuild(text, tools = [], meta = {}) {
 
     const periodId = r.kind === 'D' ? r.day : r.kind === 'W' ? r.week : 0;
     const rows = bucket(tasks, r.kind, periodId, home).map((t) => renderLine(t, now));
+
+    // Recurring occurrences sit after the one-off tasks, in series order. They
+    // are period-bound: a missed one stays on its own day rather than carrying,
+    // otherwise every skipped day would pile up forever.
+    if (known) {
+      for (const sr of series.filter((x) => x.scope === r.kind).sort((a, b) => a.num - b.num)) {
+        const st = doc.states.get(seriesKey(sr.marker, periodId));
+        const closed = st && st.state !== 'open';
+        // a closed occurrence is history: it survives the series being
+        // truncated out from under it
+        if (!occurs(sr, r.kind, periodId, y, mo) && !closed) continue;
+        if (ahead(r) && !closed) continue;           // R11 — not yet arrived
+        rows.push(renderSeries({
+          marker: sr.marker, text: sr.text,
+          state: st ? st.state : 'open',
+          stamp: st ? st.stamp : null, stampKind: st ? st.stampKind : null,
+        }, now));
+      }
+    }
     out.splice(r.at + 1, end - r.at - 1, '', ...(rows.length ? rows : ['*nothing*']), '');
   }
 
@@ -846,7 +1011,7 @@ const countStates = (text) => {
   const c = { open: 0, done: 0, dropped: 0 };
   const seen = new Set();
   for (const l of text.split('\n')) {
-    const m = l.match(/^\s*-\s*\[([ xX-])\]\s*(?:0\.)?\d+\.[DWM]\s*[\u2014-]?\s*(.*)$/);
+    const m = l.match(/^\s*-\s*\[([ xX-])\]\s*(?:(?:0\.)?\d+\.[DWM]|R\.[DWM]\.\d+)\s*[\u2014-]?\s*(.*)$/);
     if (!m) continue;
     const key = keyOf(stripTail(m[2]));
     if (!key || seen.has(key)) continue;
@@ -1180,6 +1345,12 @@ class CloseModal extends Modal {
   }
 
   async pick(row) {
+    if (this.mode.recur) {
+      const ok = await this.plugin.convertToSeries(this.file, row);
+      new Notice(ok ? `Tachado: ${row.num} now recurs` : 'Tachado: could not convert that one');
+      this.close();
+      return;
+    }
     if (this.mode.promote) return this.promote(row);
     const ok = await this.plugin.closeTask(this.file, row, this.mode.mark);
     if (ok) new Notice(`Tachado: ${row.num} ${this.mode.past}`);
@@ -1295,6 +1466,151 @@ class MoveModal extends Modal {
 const ordinal = (n) =>
   (n % 100 >= 11 && n % 100 <= 13) ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' })[n % 10] || 'th';
 
+/* ---------- recurring tasks ----------------------------------------------- */
+
+const EVERY = { D: 'Every day', W: 'Every week', M: 'Every month' };
+
+// Define a series, or stop one. Stopping is the Google-Calendar "this and all
+// following": pick the day it should stop on, and everything from there
+// forward goes. Anything already closed is history and stays.
+class RecurModal extends Modal {
+  constructor(plugin, file, mode) {
+    super(plugin.app);
+    this.plugin = plugin;
+    this.file = file;
+    this.mode = mode;               // 'new' | 'stop'
+    this.now = new Date();
+    const start = plugin.monthDate(file);
+    this.year = start.getFullYear();
+    this.month = start.getMonth();
+    this.day = defaultDay(this.year, this.month, this.now);
+    this.scope = 'D';
+    this.term = 'forever';
+    this.stage = mode === 'stop' ? 'pick' : 'define';
+  }
+
+  async onOpen() {
+    this.modalEl.addClass('tl-entry-modal');
+    this.lines = (await this.app.vault.cachedRead(this.file)).split('\n');
+    this.series = parseSeries(this.lines);
+    this.draw();
+  }
+
+  draw() {
+    const { contentEl: box } = this;
+    box.empty();
+    if (this.mode === 'stop') return this.drawStop(box);
+    this.drawNew(box);
+  }
+
+  /* ---- defining one ---- */
+
+  drawNew(box) {
+    this.titleEl.setText('New recurring task');
+
+    const scopes = box.createDiv({ cls: 'tl-task-list' });
+    for (const [key, label] of Object.entries(EVERY)) {
+      const el = scopes.createDiv({ cls: 'tl-task' + (key === this.scope ? ' is-on' : '') });
+      el.createSpan({ cls: `tl-task-num tl-${key}`, text: `R.${key}` });
+      el.createSpan({ cls: 'tl-task-text', text: label });
+      el.onclick = () => { this.scope = key; this.draw(); };
+    }
+
+    const terms = box.createDiv({ cls: 'tl-task-list' });
+    const opts = [
+      ['forever', 'Never ends'],
+      ['count',   `For a number of ${this.scope === 'D' ? 'days' : this.scope === 'W' ? 'weeks' : 'months'}`],
+      ['until',   'Until a date'],
+    ];
+    for (const [key, label] of opts) {
+      const el = terms.createDiv({ cls: 'tl-task' + (key === this.term ? ' is-on' : '') });
+      el.createSpan({ cls: 'tl-task-num', text: key === this.term ? '●' : '○' });
+      el.createSpan({ cls: 'tl-task-text', text: label });
+      el.onclick = () => { this.term = key; this.draw(); };
+    }
+
+    const row = box.createDiv({ cls: 'tl-entry-row' });
+    if (this.term === 'count') {
+      this.count = row.createEl('input', { cls: 'tl-entry-time', type: 'number' });
+      this.count.value = this.countValue || '10';
+      this.count.min = '1';
+    } else if (this.term === 'until') {
+      this.until = row.createEl('input', { cls: 'tl-entry-time', type: 'text' });
+      this.until.value = this.untilValue || ddmmyyyy(new Date(this.year, this.month + 1, 0));
+      this.until.placeholder = 'dd/mm/yyyy';
+    }
+    this.text = row.createEl('input', { cls: 'tl-entry-text', type: 'text' });
+    this.text.value = this.textValue || '';
+    this.text.placeholder = 'what recurs';
+
+    const foot = box.createDiv({ cls: 'tl-entry-foot' });
+    this.hint = foot.createDiv({ cls: 'tl-entry-hint' });
+    foot.createEl('button', { text: 'Create', cls: 'mod-cta' }).onclick = () => this.create();
+    this.text.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); this.create(); } };
+    this.text.focus();
+  }
+
+  async create() {
+    this.textValue = this.text.value;
+    this.countValue = this.count?.value;
+    this.untilValue = this.until?.value;
+
+    const what = this.text.value.trim();
+    if (!what) { this.hint.setText('Say what recurs'); return; }
+
+    let suffix = '';
+    if (this.term === 'count') {
+      const n = parseInt(this.count.value, 10);
+      if (!(n > 0)) { this.hint.setText('How many?'); return; }
+      suffix = ` (x${n})`;
+    } else if (this.term === 'until') {
+      if (!fromDdmmyyyy(this.until.value.trim())) { this.hint.setText('Date as dd/mm/yyyy'); return; }
+      suffix = ` (until ${this.until.value.trim()})`;
+    }
+
+    await this.plugin.newSeries(this.file, this.scope, suffix, what);
+    this.close();
+  }
+
+  /* ---- stopping one ---- */
+
+  drawStop(box) {
+    if (this.stage === 'pick') {
+      this.titleEl.setText('Stop a recurring task');
+      const list = box.createDiv({ cls: 'tl-task-list' });
+      const live = this.series.filter((x) => !x.until || fromDdmmyyyy(x.until) >= this.now);
+      if (!live.length) {
+        list.createDiv({ cls: 'tl-task-empty', text: 'Nothing is recurring in this note.' });
+        return;
+      }
+      for (const sr of live) {
+        const el = list.createDiv({ cls: 'tl-task' });
+        el.createSpan({ cls: `tl-task-num tl-${sr.scope}`, text: sr.marker });
+        el.createSpan({ cls: 'tl-task-text', text: sr.text });
+        el.onclick = () => { this.chosen = sr; this.stage = 'from'; this.draw(); };
+      }
+      return;
+    }
+
+    this.titleEl.setText('Stop it from which day?');
+    box.createDiv({ cls: 'tl-move-chosen', text: `${this.chosen.marker}  ${this.chosen.text}` });
+    drawCalendar(box, this, {
+      onShift: () => {},                       // a series belongs to its month
+      onPick: (d) => this.stop(d),
+    });
+    box.createDiv({ cls: 'tl-task-empty',
+      text: 'That day and everything after it goes. Anything already ticked stays.' });
+  }
+
+  async stop(day) {
+    const ok = await this.plugin.stopSeries(this.file, this.chosen.marker,
+      new Date(this.year, this.month, day));
+    new Notice(ok ? `Tachado: ${this.chosen.marker} stops on the ${day}${ordinal(day)}`
+                  : 'Tachado: could not find that series');
+    this.close();
+  }
+}
+
 /* ---------- month picker -------------------------------------------------- */
 
 // Same shape as Obsidian's own quick switcher: type to filter, Enter to pick.
@@ -1385,6 +1701,38 @@ module.exports = class Tachado extends Plugin {
           new CloseModal(this, mode, f).open();
         },
       });
+
+    this.addCommand({
+      id: 'recur-new',
+      name: 'New recurring task',
+      callback: () => {
+        const f = this.app.workspace.getActiveFile();
+        if (!this.isMonth(f)) { new Notice('Open a month note first'); return; }
+        new RecurModal(this, f, 'new').open();
+      },
+    });
+
+    this.addCommand({
+      id: 'recur-stop',
+      name: 'Stop a recurring task',
+      callback: () => {
+        const f = this.app.workspace.getActiveFile();
+        if (!this.isMonth(f)) { new Notice('Open a month note first'); return; }
+        new RecurModal(this, f, 'stop').open();
+      },
+    });
+
+    this.addCommand({
+      id: 'recur-convert',
+      name: 'Make a task recurring',
+      callback: () => {
+        const f = this.app.workspace.getActiveFile();
+        if (!this.isMonth(f)) { new Notice('Open a month note first'); return; }
+        const modal = new CloseModal(this, 'done', f);
+        modal.mode = { ...CLOSE.done, recur: true, title: 'Which task?' };
+        modal.open();
+      },
+    });
 
     this.addCommand({
       id: 'rescope',
@@ -1634,6 +1982,46 @@ module.exports = class Tachado extends Plugin {
     return month < 0 ? new Date() : new Date(year, month, 1);
   }
 
+  async newSeries(file, scope, suffix, text) {
+    const today = new Date();
+    await this.app.vault.process(file, (data) => {
+      const lines = data.split('\n');
+      const num = nextSeriesNum(lines, scope);
+      const line = `${nowRounded(today)} : R.${scope}.${num}${suffix} ${text}`;
+      insertEntry(lines, ensureDay(lines, today.getFullYear(), today.getMonth(), today.getDate()), line);
+      return lines.join('\n');
+    });
+    await this.run(file);
+    new Notice(`Tachado: recurring ${EVERY[scope].toLowerCase()}`);
+  }
+
+  async stopSeries(file, marker, from) {
+    let hit = false;
+    await this.app.vault.process(file, (data) => {
+      const lines = data.split('\n');
+      hit = truncateSeries(lines, marker, from);
+      return hit ? lines.join('\n') : data;
+    });
+    if (hit) await this.run(file);
+    return hit;
+  }
+
+  // A one-off task becomes a series from its own line onward.
+  async convertToSeries(file, row) {
+    let hit = false;
+    await this.app.vault.process(file, (data) => {
+      const lines = data.split('\n');
+      const scope = row.num.slice(-1);
+      const at = lines.findIndex((l) =>
+        !/^\s*-\s*\[/.test(l) && !/^#/.test(l) && keyOf(stripTail(l)).includes(keyOf(row.text).slice(0, 30)));
+      if (at < 0) return data;
+      hit = makeRecurring(lines, at, scope, nextSeriesNum(lines, scope));
+      return hit ? lines.join('\n') : data;
+    });
+    if (hit) await this.run(file);
+    return hit;
+  }
+
   // Write the line again, now, with a different scope. fillNumbers gives it
   // its number on the rebuild that follows.
   async rescope(file, row, scope) {
@@ -1820,4 +2208,5 @@ module.exports.__test = { parse, resolve, bucket, rebuild, keyOf, autolink,
   roundTime, normalizeTimes, protect, unlink, GEN_LINE, ddmmyyyy, stripTail, parseGhUrl, commitEntry, prEntry,
   reviewEntry, prToEntries, commitsToEntries, reviewsToEntries, tidy,
   insertEntry, minutesOf, monthSkeleton, fillNumbers, tokensOf, monthChoices, weekOfMonth, headingKey,
-  ensureDay, insertByKey, openRows, closedRows, closeRow, reopenRow, logRows, moveRow, parseTimeInput, nowRounded, calendarGrid, isFuture, firstDayOfWeek, defaultDay };
+  ensureDay, insertByKey, parseSeries, occurs, truncateSeries, seriesKey,
+  fromDdmmyyyy, lastDayOfWeek, nextSeriesNum, makeRecurring, openRows, closedRows, closeRow, reopenRow, logRows, moveRow, parseTimeInput, nowRounded, calendarGrid, isFuture, firstDayOfWeek, defaultDay };

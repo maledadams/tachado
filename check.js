@@ -14,7 +14,9 @@ const { rebuild, autolink, yearIndexNote, countStates, ENTITY_TEMPLATE, KINDS,
         prToEntries, commitsToEntries, reviewsToEntries, tidy, insertEntry, minutesOf,
         fillNumbers, tokensOf,
         monthSkeleton, monthChoices, weekOfMonth, ensureDay, openRows, closedRows, closeRow, reopenRow, logRows, moveRow, parseTimeInput,
-        nowRounded, calendarGrid, isFuture, firstDayOfWeek, defaultDay } = T;
+        nowRounded, calendarGrid, isFuture, firstDayOfWeek, defaultDay,
+        parseSeries, occurs, truncateSeries, seriesKey, fromDdmmyyyy, lastDayOfWeek,
+        nextSeriesNum, makeRecurring } = T;
 let n = 0;
 const ok = (name, cond) => { n++; if (!cond) { console.error('FAIL:', name); process.exit(1); } };
 const has = (out, s) => out.includes(s);
@@ -1023,6 +1025,159 @@ ok('an open row is refused',
 const out = rebuild(lines.join('\n'), [], { year: '2026', month: 8, today: new Date(2026, 8, 20) });
 ok('reopened task loses its date', !/finished one[^\n]*completed/.test(out));
 ok('the other closed task keeps its', out.includes('~~dropped one~~ [DROPPED 14/09/2026]'));
+}
+
+/* ---- recurring series ---- */
+{
+const note = (def) => `# SEPTEMBER 2026
+
+# WEEK 3 OF SEPTEMBER
+
+## Mon, September, 14:
+9:00 a.m. : ${def}
+
+### Daily TO-DO Report
+
+## Tue, September, 15:
+
+### Daily TO-DO Report
+
+## Wed, September, 16:
+
+### Daily TO-DO Report
+
+## Thu, September, 17:
+
+### Daily TO-DO Report
+`;
+const on = (def, d) => rebuild(note(def), [], { year: '2026', month: 8, today: new Date(2026, 8, d) });
+const rep = (o, name) => (o.split(`## ${name}`)[1].split(/\n## /)[0].split('### Daily TO-DO Report')[1] || '');
+
+// parsing
+let ser = parseSeries(note('R.D.1 take the medication').split('\n'));
+ok('series parsed',        ser.length === 1);
+ok('marker kept',          ser[0].marker === 'R.D.1');
+ok('scope and number',     ser[0].scope === 'D' && ser[0].num === 1);
+ok('start day recorded',   ser[0].startDay === 14);
+ok('text without marker',  ser[0].text === 'take the medication');
+ok('no termination',       ser[0].count === null && ser[0].until === null);
+
+ser = parseSeries(note('R.W.2 (x4) weekly review').split('\n'));
+ok('count parsed',   ser[0].count === 4 && ser[0].scope === 'W' && ser[0].num === 2);
+ok('suffix stripped from text', ser[0].text === 'weekly review');
+
+ser = parseSeries(note('R.D.1 (until 16/09/2026) short run').split('\n'));
+ok('until parsed',   ser[0].until === '16/09/2026');
+ser = parseSeries(note('R.D.1 (x9, until 30/09/2026) both').split('\n'));
+ok('both parsed',    ser[0].count === 9 && ser[0].until === '30/09/2026');
+ok('date helper',    fromDdmmyyyy('16/09/2026').getDate() === 16);
+ok('bad date is null', fromDdmmyyyy('nope') === null);
+
+// a definition is not also a one-off task
+let o = on('R.D.1 take the medication', 17);
+ok('no stray plain task', !/- \[ \] \d+\.D/.test(o));
+
+// every day from the start, independently
+ok('occurs on its start day', rep(o, 'Mon, September, 14:').includes('R.D.1 — take the medication'));
+ok('occurs the next day',     rep(o, 'Tue, September, 15:').includes('R.D.1'));
+ok('occurs today',            rep(o, 'Thu, September, 17:').includes('R.D.1'));
+
+// never before it began
+o = rebuild(`# SEPTEMBER 2026\n\n# WEEK 3 OF SEPTEMBER\n\n## Mon, September, 14:\n\n### Daily TO-DO Report\n\n## Wed, September, 16:\n9:00 a.m. : R.D.1 started later\n\n### Daily TO-DO Report\n`,
+            [], { year: '2026', month: 8, today: new Date(2026, 8, 17) });
+ok('not before the start day', !rep(o, 'Mon, September, 14:').includes('R.D.1'));
+ok('on the start day',          rep(o, 'Wed, September, 16:').includes('R.D.1'));
+
+// never ahead of the clock
+o = on('R.D.1 take the medication', 15);
+ok('not on a future day', !rep(o, 'Thu, September, 17:').includes('R.D.1'));
+
+// count
+o = on('R.D.1 (x2) twice only', 17);
+ok('first occurrence',  rep(o, 'Mon, September, 14:').includes('R.D.1'));
+ok('second occurrence', rep(o, 'Tue, September, 15:').includes('R.D.1'));
+ok('and then it stops', !rep(o, 'Wed, September, 16:').includes('R.D.1'));
+
+// until
+o = on('R.D.1 (until 15/09/2026) short run', 17);
+ok('runs to the until date',  rep(o, 'Tue, September, 15:').includes('R.D.1'));
+ok('stops after it',         !rep(o, 'Wed, September, 16:').includes('R.D.1'));
+
+// a recurring task never carries
+o = on('R.D.1 take the medication', 17);
+ok('no carry marker on a series', !o.includes('0.1.D — take the medication'));
+ok('one row per day',
+   (o.match(/R\.D\.1 — take the medication/g) || []).length === 4);
+
+// state is per period
+const ticked = note('R.D.1 take the medication')
+  .replace('## Tue, September, 15:\n\n### Daily TO-DO Report\n',
+           '## Tue, September, 15:\n\n### Daily TO-DO Report\n\n- [x] R.D.1 — take the medication\n');
+o = rebuild(ticked, [], { year: '2026', month: 8, today: new Date(2026, 8, 17) });
+ok('the ticked day is closed',  /- \[x\] R\.D\.1 — ~~take the medication~~ \[completed/.test(rep(o, 'Tue, September, 15:')));
+ok('other days stay open',      rep(o, 'Wed, September, 16:').includes('- [ ] R.D.1'));
+ok('the start day stays open',  rep(o, 'Mon, September, 14:').includes('- [ ] R.D.1'));
+ok('recurring rebuild is stable',
+   rebuild(o, [], { year: '2026', month: 8, today: new Date(2026, 8, 17) }) === o);
+
+// truncation — the Google Calendar "this and following"
+let L = note('R.D.1 take the medication').split('\n');
+ok('truncate succeeds', truncateSeries(L, 'R.D.1', new Date(2026, 8, 16)) === true);
+ok('until written as the day before', L.join('\n').includes('(until 15/09/2026)'));
+o = rebuild(L.join('\n'), [], { year: '2026', month: 8, today: new Date(2026, 8, 17) });
+ok('past occurrences remain', rep(o, 'Mon, September, 14:').includes('R.D.1'));
+ok('and the day before the cut', rep(o, 'Tue, September, 15:').includes('R.D.1'));
+ok('the cut day is gone',     !rep(o, 'Wed, September, 16:').includes('R.D.1'));
+ok('and everything after',    !rep(o, 'Thu, September, 17:').includes('R.D.1'));
+ok('the definition survives', o.includes('R.D.1 (until 15/09/2026) take the medication'));
+
+// truncating a counted series keeps the count
+L = note('R.D.1 (x30) long run').split('\n');
+truncateSeries(L, 'R.D.1', new Date(2026, 8, 16));
+ok('count preserved alongside until', L.join('\n').includes('(x30, until 15/09/2026)'));
+
+// weekly series
+ok('week end helper', lastDayOfWeek(2026, 8, 3) === 20);
+ok('weekly occurs in its week',  occurs({ scope: 'W', startWeek: 3, count: null, until: null }, 'W', 3, 2026, 8));
+ok('not in an earlier week',    !occurs({ scope: 'W', startWeek: 3, count: null, until: null }, 'W', 2, 2026, 8));
+ok('scope must match',          !occurs({ scope: 'W', startWeek: 3, count: null, until: null }, 'D', 14, 2026, 8));
+}
+
+/* ---- converting to and from recurring ---- */
+{
+const body = '# SEPTEMBER 2026\n\n# WEEK 3 OF SEPTEMBER\n\n## Mon, September, 14:\n' +
+             '9:00 a.m. : 1.D water the plants\n9:30 a.m. : R.D.1 existing series\n\n### Daily TO-DO Report\n';
+const L = body.split('\n');
+
+ok('next number skips the one in use', nextSeriesNum(L, 'D') === 2);
+ok('a fresh scope starts at 1',        nextSeriesNum(L, 'W') === 1);
+
+const lines = body.split('\n');
+const at = lines.findIndex((l) => l.includes('water the plants'));
+ok('converted in place',  makeRecurring(lines, at, 'D', 2) === true);
+ok('marker rewritten',    lines[at] === '9:00 a.m. : R.D.2 water the plants');
+ok('a line with no such marker is refused',
+   makeRecurring(body.split('\n'), 0, 'D', 3) === false);
+
+const o = rebuild(lines.join('\n'), [], { year: '2026', month: 8, today: new Date(2026, 8, 14) });
+ok('it now recurs',        o.includes('R.D.2 — water the plants'));
+ok('and is not a one-off', !/- \[ \] 1\.D — water the plants/.test(o));
+
+// "make it non-recurring" is truncation from today: the past stays
+const back = lines.slice();
+truncateSeries(back, 'R.D.2', new Date(2026, 8, 15));
+ok('stops from the cut', back.join('\n').includes('R.D.2 (until 14/09/2026) water the plants'));
+const o2 = rebuild(back.join('\n'), [], { year: '2026', month: 8, today: new Date(2026, 8, 20) });
+ok('the past occurrence remains', o2.includes('R.D.2 — water the plants'));
+
+// a closed occurrence survives truncation, because it is history
+const closed = ('# SEPTEMBER 2026\n\n# WEEK 3 OF SEPTEMBER\n\n## Mon, September, 14:\n' +
+  '9:00 a.m. : R.D.1 daily thing\n\n### Daily TO-DO Report\n\n- [x] R.D.1 — daily thing\n\n' +
+  '## Tue, September, 15:\n\n### Daily TO-DO Report\n').split('\n');
+truncateSeries(closed, 'R.D.1', new Date(2026, 8, 14));
+const o3 = rebuild(closed.join('\n'), [], { year: '2026', month: 8, today: new Date(2026, 8, 20) });
+ok('a ticked occurrence is kept', /- \[x\] R\.D\.1 — ~~daily thing~~/.test(o3));
+ok('the open future one is gone', !o3.split('## Tue, September, 15:')[1].includes('R.D.1'));
 }
 
 console.log(`all ${n} checks passed`);
